@@ -88,19 +88,6 @@ The game includes:
 
 - **Go:** Install version 1.16 or later from [golang.org](https://golang.org/dl/)
 - **Git:** Required to fetch dependencies
-- **Ebiten Library:**
-
-```bash
-go get github.com/hajimehoshi/ebiten/v2
-```
-
-- **Linux Dependencies:**
-
-```bash
-sudo apt-get install libgl1-mesa-dev libxrandr-dev libxinerama-dev libxi-dev libasound2-dev
-```
-
-_(Adjust for your distribution: yum, pacman, etc.)_
 
 ### Clone the Repository
 
@@ -108,6 +95,34 @@ _(Adjust for your distribution: yum, pacman, etc.)_
 git clone <repository-url>
 cd snake
 ```
+
+### Initialize Go Module
+
+```bash
+go mod init snake
+```
+
+This creates a `go.mod` file in your project directory.
+
+### Install Ebiten Package
+
+```bash
+go get github.com/hajimehoshi/ebiten/v2
+```
+
+This adds Ebiten as a dependency to your `go.mod` and `go.sum`.
+
+### Linux Dependencies
+
+For Linux, you may need graphics and audio libraries:
+
+```bash
+sudo apt-get install libgl1-mesa-dev libxrandr-dev libxinerama-dev libxi-dev libasound2-dev
+```
+
+_(Adjust for your distribution: yum, pacman, etc.)_
+
+---
 
 ### Build for Windows
 
