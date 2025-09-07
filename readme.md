@@ -107,10 +107,13 @@ This creates a `go.mod` file in your project directory.
 ### Install Ebiten Package
 
 ```bash
-go get github.com/hajimehoshi/ebiten/v2
+go get github.com/hajimehoshi/ebiten/
+go get github.com/hajimehoshi/ebiten/v2/audio@v2.8.8
 ```
 
 This adds Ebiten as a dependency to your `go.mod` and `go.sum`.
+
+
 
 ### Linux Dependencies
 
