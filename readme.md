@@ -108,13 +108,10 @@ This creates a `go.mod` file in your project directory.
 
 ```bash
 go mod tidy
-go get github.com/hajimehoshi/ebiten/
-go get github.com/hajimehoshi/ebiten/v2/audio@v2.8.8
+
 ```
 
 This adds Ebiten as a dependency to your `go.mod` and `go.sum`.
-
-
 
 ### Linux Dependencies
 
