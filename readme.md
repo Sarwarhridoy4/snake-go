@@ -107,6 +107,7 @@ This creates a `go.mod` file in your project directory.
 ### Install Ebiten Package
 
 ```bash
+go mod tidy
 go get github.com/hajimehoshi/ebiten/
 go get github.com/hajimehoshi/ebiten/v2/audio@v2.8.8
 ```
