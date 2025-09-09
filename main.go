@@ -46,6 +46,16 @@ type Particle struct {
 	rotVel   float64
 }
 
+type Meteor struct {
+	pos    Vector2
+	vel    Vector2
+	size   float64
+	color  color.RGBA
+	trail  []Vector2
+	life   float64
+	glow   float64
+}
+
 type PowerUp struct {
 	pos      Point
 	type_    int // 0: bonus points, 1: speed boost, 2: invulnerability
@@ -77,7 +87,7 @@ type Renderer struct {
 	game           *Game
 	backgroundGrid [][]BackgroundCell
 	starField      []Star
-	nebulaClouds   []NebulaCloud
+	meteors        []Meteor
 	time           float64
 }
 
@@ -93,15 +103,6 @@ type Star struct {
 	twinkle    float64
 	speed      float64
 	size       float64
-}
-
-type NebulaCloud struct {
-	pos     Vector2
-	size    float64
-	color   color.RGBA
-	drift   Vector2
-	opacity float64
-	phase   float64
 }
 
 type Game struct {
@@ -157,33 +158,32 @@ type Game struct {
 	renderer *Renderer
 }
 
-// ==================== COLOR PALETTE ====================
+// ==================== GREEN/BLACK/RED COLOR PALETTE ====================
 
 var (
-	// Base colors
-	bgColor     = color.RGBA{8, 10, 25, 255}      // Deep space blue
-	gridColor   = color.RGBA{25, 30, 50, 80}      // Subtle grid
-	headColor   = color.RGBA{0, 255, 180, 255}    // Bright cyan
-	bodyColor   = color.RGBA{0, 200, 150, 255}    // Ocean green
-	foodColor   = color.RGBA{255, 100, 120, 255}  // Coral pink
-	bonusColor  = color.RGBA{255, 215, 0, 255}    // Gold
+	// Base colors - Green/Black/Red theme
+	bgColor     = color.RGBA{5, 10, 5, 255}         // Deep black-green
+	gridColor   = color.RGBA{20, 40, 20, 40}        // Subtle dark green grid
+	headColor   = color.RGBA{0, 255, 50, 255}       // Bright lime green
+	bodyColor   = color.RGBA{0, 180, 30, 255}       // Forest green
+	foodColor   = color.RGBA{255, 50, 50, 255}      // Bright red (highly visible)
+	bonusColor  = color.RGBA{255, 255, 100, 255}    // Bright yellow
 	shadowColor = color.RGBA{0, 0, 0, 120}
 
-	// Nebula colors
-	nebulaColors = []color.RGBA{
-		{120, 50, 200, 30},   // Purple
-		{50, 150, 255, 25},   // Blue
-		{255, 100, 150, 20},  // Pink
-		{100, 255, 200, 25},  // Cyan
-		{255, 200, 50, 20},   // Yellow
+	// Meteor colors - red/orange theme
+	meteorColors = []color.RGBA{
+		{255, 100, 50, 255},  // Red-orange
+		{255, 150, 100, 255}, // Orange
+		{255, 200, 150, 255}, // Light orange
+		{200, 50, 50, 255},   // Dark red
 	}
 
-	// Star colors
+	// Star colors - green theme with some variety
 	starColors = []color.RGBA{
-		{255, 255, 255, 255}, // White
-		{200, 220, 255, 255}, // Blue white
-		{255, 240, 200, 255}, // Warm white
-		{255, 200, 150, 255}, // Orange
+		{200, 255, 200, 255}, // Light green
+		{150, 255, 150, 255}, // Medium green
+		{100, 200, 100, 255}, // Forest green
+		{255, 255, 255, 255}, // White for variety
 	}
 )
 
@@ -245,9 +245,6 @@ func (g *Game) calculatePlayfieldDimensions() {
 	
 	g.scaleFactor = float64(g.cellSize) / float64(baseCellSize)
 }
-
-// ==================== AUDIO SYSTEM ====================
-
 
 // ==================== AUDIO SYSTEM ====================
 
@@ -326,7 +323,7 @@ func (r *Renderer) initializeBackground() {
 		r.backgroundGrid[x] = make([]BackgroundCell, baseGridH*2)
 		for y := range r.backgroundGrid[x] {
 			r.backgroundGrid[x][y] = BackgroundCell{
-				intensity:  r.game.rng.Float64() * 0.5,
+				intensity:  r.game.rng.Float64() * 0.3, // Reduced for better contrast
 				phase:      r.game.rng.Float64() * 2 * math.Pi,
 				colorShift: r.game.rng.Float64() * 2 * math.Pi,
 			}
@@ -334,37 +331,24 @@ func (r *Renderer) initializeBackground() {
 	}
 	
 	// Initialize star field
-	starCount := 150
+	starCount := 100 // Reduced for cleaner look
 	r.starField = make([]Star, starCount)
 	for i := range r.starField {
 		r.starField[i] = Star{
 			pos: Vector2{
-				X: r.game.rng.Float64() * 1920, // Large enough for any screen
-				Y: r.game.rng.Float64() * 1080,
-			},
-			brightness: 0.3 + r.game.rng.Float64()*0.7,
-			twinkle:    r.game.rng.Float64() * 2 * math.Pi,
-			speed:      0.1 + r.game.rng.Float64()*0.3,
-			size:       1 + r.game.rng.Float64()*2,
-		}
-	}
-	
-	// Initialize nebula clouds
-	nebulaCount := 8
-	r.nebulaClouds = make([]NebulaCloud, nebulaCount)
-	for i := range r.nebulaClouds {
-		r.nebulaClouds[i] = NebulaCloud{
-			pos: Vector2{
 				X: r.game.rng.Float64() * 1920,
 				Y: r.game.rng.Float64() * 1080,
 			},
-			size:    100 + r.game.rng.Float64()*300,
-			color:   nebulaColors[r.game.rng.Intn(len(nebulaColors))],
-			drift:   Vector2{(r.game.rng.Float64()-0.5)*0.2, (r.game.rng.Float64()-0.5)*0.2},
-			opacity: 0.3 + r.game.rng.Float64()*0.4,
-			phase:   r.game.rng.Float64() * 2 * math.Pi,
+			brightness: 0.4 + r.game.rng.Float64()*0.6,
+			twinkle:    r.game.rng.Float64() * 2 * math.Pi,
+			speed:      0.1 + r.game.rng.Float64()*0.2,
+			size:       1 + r.game.rng.Float64()*1.5,
 		}
 	}
+	
+	// Initialize meteors
+	meteorCount := 12
+	r.meteors = make([]Meteor, 0, meteorCount)
 }
 
 func (r *Renderer) drawSpaceBackground(screen *ebiten.Image) {
@@ -373,52 +357,14 @@ func (r *Renderer) drawSpaceBackground(screen *ebiten.Image) {
 	// Fill with deep space color
 	screen.Fill(bgColor)
 	
-	// Draw nebula clouds
-	r.drawNebulaClouds(screen)
-	
 	// Draw stars with twinkling effect
 	r.drawStarField(screen)
 	
-	// Draw animated grid overlay
+	// Draw meteors
+	r.drawMeteors(screen)
+	
+	// Draw animated grid overlay (more subtle)
 	r.drawAnimatedGrid(screen)
-}
-
-func (r *Renderer) drawNebulaClouds(screen *ebiten.Image) {
-	for i := range r.nebulaClouds {
-		cloud := &r.nebulaClouds[i]
-		
-		// Update cloud position
-		cloud.pos.X += cloud.drift.X
-		cloud.pos.Y += cloud.drift.Y
-		cloud.phase += 0.005
-		
-		// Wrap around screen
-		if cloud.pos.X < -cloud.size { cloud.pos.X = float64(r.game.screenWidth) + cloud.size }
-		if cloud.pos.X > float64(r.game.screenWidth)+cloud.size { cloud.pos.X = -cloud.size }
-		if cloud.pos.Y < -cloud.size { cloud.pos.Y = float64(r.game.screenHeight) + cloud.size }
-		if cloud.pos.Y > float64(r.game.screenHeight)+cloud.size { cloud.pos.Y = -cloud.size }
-		
-		// Draw cloud as multiple overlapping circles with varying opacity
-		cloudOpacity := cloud.opacity * (0.8 + 0.2*math.Sin(cloud.phase))
-		numRings := 5
-		
-		for ring := 0; ring < numRings; ring++ {
-			ringSize := cloud.size * (0.3 + float64(ring)*0.2)
-			ringOpacity := cloudOpacity / float64(numRings-ring+1)
-			
-			// Create gradient effect
-			for radius := ringSize; radius > 0; radius -= 5 {
-				alpha := uint8(float64(cloud.color.A) * ringOpacity * (radius/ringSize))
-				if alpha > 0 {
-					cloudColor := color.RGBA{cloud.color.R, cloud.color.G, cloud.color.B, alpha}
-					ebitenutil.DrawRect(screen, 
-						cloud.pos.X - radius/2, 
-						cloud.pos.Y - radius/2,
-						radius, radius, cloudColor)
-				}
-			}
-		}
-	}
 }
 
 func (r *Renderer) drawStarField(screen *ebiten.Image) {
@@ -433,28 +379,104 @@ func (r *Renderer) drawStarField(screen *ebiten.Image) {
 		finalBrightness := star.brightness * twinkleFactor
 		finalSize := star.size * (0.8 + 0.4*twinkleFactor)
 		
-		// Choose star color based on brightness
+		// Choose star color - mostly green theme
 		starColor := starColors[i%len(starColors)]
 		alpha := uint8(float64(starColor.A) * finalBrightness)
 		finalColor := color.RGBA{starColor.R, starColor.G, starColor.B, alpha}
 		
-		// Draw star with glow effect
-		if finalSize > 1.5 {
-			// Draw outer glow
-			glowSize := finalSize * 1.5
-			glowAlpha := alpha / 3
-			glowColor := color.RGBA{starColor.R, starColor.G, starColor.B, glowAlpha}
-			ebitenutil.DrawRect(screen,
-				star.pos.X - glowSize/2,
-				star.pos.Y - glowSize/2,
-				glowSize, glowSize, glowColor)
-		}
-		
-		// Draw star core
+		// Draw star
 		ebitenutil.DrawRect(screen,
 			star.pos.X - finalSize/2,
 			star.pos.Y - finalSize/2,
 			finalSize, finalSize, finalColor)
+	}
+}
+
+func (r *Renderer) drawMeteors(screen *ebiten.Image) {
+	// Spawn new meteors occasionally
+	if r.game.rng.Float64() < 0.02 && len(r.meteors) < 15 {
+		meteor := Meteor{
+			pos: Vector2{
+				X: -50 + r.game.rng.Float64()*100,
+				Y: -50 + r.game.rng.Float64()*100,
+			},
+			vel: Vector2{
+				X: 2 + r.game.rng.Float64()*4,
+				Y: 3 + r.game.rng.Float64()*5,
+			},
+			size:  3 + r.game.rng.Float64()*8,
+			color: meteorColors[r.game.rng.Intn(len(meteorColors))],
+			trail: make([]Vector2, 0, 20),
+			life:  1.0,
+			glow:  r.game.rng.Float64(),
+		}
+		r.meteors = append(r.meteors, meteor)
+	}
+	
+	// Update and draw meteors
+	for i := len(r.meteors) - 1; i >= 0; i-- {
+		meteor := &r.meteors[i]
+		
+		// Update position
+		meteor.pos.X += meteor.vel.X
+		meteor.pos.Y += meteor.vel.Y
+		
+		// Add to trail
+		meteor.trail = append(meteor.trail, meteor.pos)
+		if len(meteor.trail) > 15 {
+			meteor.trail = meteor.trail[1:]
+		}
+		
+		// Update glow
+		meteor.glow += 0.1
+		glowFactor := 0.7 + 0.3*math.Sin(meteor.glow)
+		
+		// Draw trail
+		for j, trailPos := range meteor.trail {
+			trailAlpha := float64(j) / float64(len(meteor.trail))
+			trailSize := meteor.size * 0.3 * trailAlpha
+			trailColor := color.RGBA{
+				meteor.color.R,
+				meteor.color.G,
+				meteor.color.B,
+				uint8(float64(meteor.color.A) * trailAlpha * 0.5),
+			}
+			
+			if trailSize > 0.5 {
+				ebitenutil.DrawRect(screen,
+					trailPos.X - trailSize/2,
+					trailPos.Y - trailSize/2,
+					trailSize, trailSize, trailColor)
+			}
+		}
+		
+		// Draw meteor core with glow
+		coreSize := meteor.size * glowFactor
+		glowSize := coreSize * 2
+		
+		// Outer glow
+		glowColor := color.RGBA{
+			meteor.color.R,
+			meteor.color.G,
+			meteor.color.B,
+			uint8(float64(meteor.color.A) * 0.3),
+		}
+		ebitenutil.DrawRect(screen,
+			meteor.pos.X - glowSize/2,
+			meteor.pos.Y - glowSize/2,
+			glowSize, glowSize, glowColor)
+		
+		// Core
+		ebitenutil.DrawRect(screen,
+			meteor.pos.X - coreSize/2,
+			meteor.pos.Y - coreSize/2,
+			coreSize, coreSize, meteor.color)
+		
+		// Remove meteors that are off screen
+		if meteor.pos.X > float64(r.game.screenWidth)+100 || 
+		   meteor.pos.Y > float64(r.game.screenHeight)+100 {
+			r.meteors = append(r.meteors[:i], r.meteors[i+1:]...)
+		}
 	}
 }
 
@@ -472,7 +494,7 @@ func (r *Renderer) drawAnimatedGrid(screen *ebiten.Image) {
 	offsetX := (r.game.screenWidth - r.game.gridW*r.game.cellSize) / 2
 	offsetY := (r.game.screenHeight - r.game.gridH*r.game.cellSize) / 2
 	
-	// Draw animated background cells within the playfield
+	// Draw animated background cells within the playfield (very subtle)
 	for x := 0; x < r.game.gridW; x++ {
 		for y := 0; y < r.game.gridH; y++ {
 			// Use modulo to wrap background pattern
@@ -481,20 +503,20 @@ func (r *Renderer) drawAnimatedGrid(screen *ebiten.Image) {
 			cell := &r.backgroundGrid[bgX][bgY]
 			
 			// Create wave pattern
-			wave := math.Sin(r.time*0.5 + cell.phase + float64(x+y)*0.2)
-			colorWave := math.Sin(r.time*0.3 + cell.colorShift)
+			wave := math.Sin(r.time*0.3 + cell.phase + float64(x+y)*0.1)
 			
-			intensity := cell.intensity + wave*0.1
+			intensity := cell.intensity + wave*0.05
 			if intensity < 0 { intensity = 0 }
-			if intensity > 0.6 { intensity = 0.6 }
+			if intensity > 0.3 { intensity = 0.3 } // Very subtle
 			
-			// Create color variation
+			// Green-tinted background cells
 			baseIntensity := int(intensity * 255)
-			red := uint8(baseIntensity + int(colorWave*20))
-			green := uint8(baseIntensity + int(math.Sin(colorWave+1.0)*15))
-			blue := uint8(baseIntensity + int(math.Sin(colorWave+2.0)*25))
+			red := uint8(float64(baseIntensity) * 0.3)
+			green := uint8(baseIntensity)
+			blue := uint8(float64(baseIntensity) * 0.3)
+
 			
-			cellColor := color.RGBA{red, green, blue, 40}
+			cellColor := color.RGBA{red, green, blue, 30}
 			
 			cellX := float64(offsetX + x*r.game.cellSize)
 			cellY := float64(offsetY + y*r.game.cellSize)
@@ -504,9 +526,9 @@ func (r *Renderer) drawAnimatedGrid(screen *ebiten.Image) {
 		}
 	}
 	
-	// Draw grid lines with glow effect
-	gridAlpha := uint8(60 + 20*math.Sin(r.time*0.5))
-	gridColor := color.RGBA{50, 80, 120, gridAlpha}
+	// Draw grid lines with subtle green glow
+	gridAlpha := uint8(40 + 10*math.Sin(r.time*0.3))
+	gridColor := color.RGBA{30, 60, 30, gridAlpha}
 	
 	// Vertical lines
 	for x := 0; x <= r.game.gridW; x++ {
@@ -914,7 +936,7 @@ func (g *Game) updateGameplay() error {
 			g.eatPlayer.Play()
 		}
 		
-		// Add particles
+		// Add particles - red for food
 		particleCount := 8 + g.combo/2
 		g.addParticles(g.food, particleCount, foodColor)
 		
@@ -1016,70 +1038,14 @@ func (g *Game) drawParticles(screen *ebiten.Image) {
 				y += (g.rng.Float64() - 0.5) * g.shakeIntensity * 0.5
 			}
 
-			// Rotation
-			cos := math.Cos(p.rotation)
-			sin := math.Sin(p.rotation)
-
-			// Rotated corners of the quad
-			corners := []Vector2{
-				{x - size/2*cos + size/2*sin, y - size/2*sin - size/2*cos},
-				{x + size/2*cos + size/2*sin, y + size/2*sin - size/2*cos},
-				{x + size/2*cos - size/2*sin, y + size/2*sin + size/2*cos},
-				{x - size/2*cos - size/2*sin, y - size/2*sin + size/2*cos},
-			}
-
-			// Convert corners into vertices
-			vertices := []ebiten.Vertex{
-				{
-					DstX:   float32(corners[0].X),
-					DstY:   float32(corners[0].Y),
-					ColorR: float32(particleColor.R) / 255,
-					ColorG: float32(particleColor.G) / 255,
-					ColorB: float32(particleColor.B) / 255,
-					ColorA: float32(particleColor.A) / 255,
-				},
-				{
-					DstX:   float32(corners[1].X),
-					DstY:   float32(corners[1].Y),
-					ColorR: float32(particleColor.R) / 255,
-					ColorG: float32(particleColor.G) / 255,
-					ColorB: float32(particleColor.B) / 255,
-					ColorA: float32(particleColor.A) / 255,
-				},
-				{
-					DstX:   float32(corners[2].X),
-					DstY:   float32(corners[2].Y),
-					ColorR: float32(particleColor.R) / 255,
-					ColorG: float32(particleColor.G) / 255,
-					ColorB: float32(particleColor.B) / 255,
-					ColorA: float32(particleColor.A) / 255,
-				},
-				{
-					DstX:   float32(corners[3].X),
-					DstY:   float32(corners[3].Y),
-					ColorR: float32(particleColor.R) / 255,
-					ColorG: float32(particleColor.G) / 255,
-					ColorB: float32(particleColor.B) / 255,
-					ColorA: float32(particleColor.A) / 255,
-				},
-			}
-
-			// Indices for two triangles
-			indices := []uint16{0, 1, 2, 0, 2, 3}
-
-			// Draw the rotated quad using a white texture
-			screen.DrawTriangles(vertices, indices, emptySubImage, nil)
+			// Simple rectangular particle for now
+			ebitenutil.DrawRect(screen,
+				x - size/2,
+				y - size/2,
+				size, size, particleColor)
 		}
 	}
 }
-
-// Create a reusable white texture (1x1 pixel)
-var emptySubImage = ebiten.NewImage(1, 1)
-
-func init() {
-	emptySubImage.Fill(color.White)
-}
-
 
 func (g *Game) Draw(screen *ebiten.Image) {
 	// Always draw the space background
@@ -1113,22 +1079,26 @@ func (g *Game) drawGameplay(screen *ebiten.Image) {
 		g.drawEnhancedCell(screen, g.powerUp.pos.X, g.powerUp.pos.Y, powerColor, pulse, 1.0)
 	}
 
-	// Draw food with enhanced pulsing
-	pulse := 0.85 + 0.15*math.Sin(g.foodPulse)
+	// Draw food with enhanced visibility - bright red with white border
+	pulse := 1.0 + 0.2*math.Sin(g.foodPulse*2) // Stronger pulse for visibility
+	
+	// Draw white border for maximum visibility
+	borderColor := color.RGBA{255, 255, 255, 200}
+	g.drawEnhancedCell(screen, g.food.X, g.food.Y, borderColor, pulse*1.2, 1.0)
+	
+	// Draw bright red core
 	currentFoodColor := foodColor
 	if g.combo > 0 {
-		// Rainbow effect for combo food
-		hue := math.Mod(g.foodPulse*2, 2*math.Pi)
-		currentFoodColor = color.RGBA{
-			uint8(127 + 127*math.Sin(hue)),
-			uint8(127 + 127*math.Sin(hue+2*math.Pi/3)),
-			uint8(127 + 127*math.Sin(hue+4*math.Pi/3)),
-			255,
+		// Alternate between bright red and bright yellow for combo
+		if int(g.foodPulse*4)%2 == 0 {
+			currentFoodColor = color.RGBA{255, 255, 50, 255} // Bright yellow
+		} else {
+			currentFoodColor = color.RGBA{255, 50, 50, 255}  // Bright red
 		}
 	}
 	g.drawEnhancedCell(screen, g.food.X, g.food.Y, currentFoodColor, pulse, 1.0)
 
-	// Draw snake with trail effect
+	// Draw snake with green theme
 	for i, s := range g.snake {
 		opacity := 1.0
 		if i < len(g.trailOpacity) {
@@ -1142,14 +1112,14 @@ func (g *Game) drawGameplay(screen *ebiten.Image) {
 			
 			// Special effects based on power-ups
 			if g.invulnerable > 0 {
-				// Flashing invulnerability
+				// Flashing invulnerability - green/white
 				if (g.frame/5)%2 == 0 {
-					currentHeadColor = color.RGBA{255, 255, 150, 255}
+					currentHeadColor = color.RGBA{200, 255, 200, 255}
 				}
 			} else if g.speedBoostTime > 0 {
-				currentHeadColor = color.RGBA{255, 180, 100, 255}
+				currentHeadColor = color.RGBA{150, 255, 100, 255} // Brighter green
 			} else if g.slowMotionTime > 0 {
-				currentHeadColor = color.RGBA{100, 180, 255, 255}
+				currentHeadColor = color.RGBA{100, 150, 100, 255} // Darker green
 			}
 			
 			g.drawEnhancedCell(screen, s.X, s.Y, currentHeadColor, headScale, opacity)
@@ -1158,11 +1128,11 @@ func (g *Game) drawGameplay(screen *ebiten.Image) {
 			bodyScale := 0.9 - float64(i)*0.01
 			if bodyScale < 0.5 { bodyScale = 0.5 }
 			
-			// Gradient body color
+			// Gradient body color - green theme
 			factor := float64(i) / float64(len(g.snake))
 			currentBodyColor := color.RGBA{
 				uint8(float64(bodyColor.R) * (1 - factor*0.4)),
-				uint8(float64(bodyColor.G) * (1 - factor*0.4)),
+				uint8(float64(bodyColor.G) * (1 - factor*0.3)),
 				uint8(float64(bodyColor.B) * (1 - factor*0.4)),
 				bodyColor.A,
 			}
@@ -1185,13 +1155,13 @@ func (g *Game) drawTitleScreen(screen *ebiten.Image) {
 	lines := []string{
 		"🌌 COSMIC SNAKE 🐍",
 		"",
-		"🎮 Enhanced Features:",
-		"• Dynamic Fullscreen Playground",
-		"• Spectacular Space Background",
+		"🔥 Meteor Storm Edition",
+		"• Dynamic Fullscreen Arena",
+		"• Falling Meteor Background",
+		"• Green/Black/Red Theme",
+		"• Enhanced Food Visibility",
 		"• Combo System & Power-ups",
-		"• Particle Effects & Smooth Animations",
-		"• Enhanced Audio & Visual Effects",
-		"• Statistics Tracking",
+		"• Spectacular Visual Effects",
 		"",
 		"🎯 Controls:",
 		"Arrow Keys/WASD: Move",
@@ -1204,11 +1174,9 @@ func (g *Game) drawTitleScreen(screen *ebiten.Image) {
 		"",
 		"🚀 Press ENTER/SPACE to Launch!",
 		"Press S for Statistics",
-		"",
-		"✨ Enhanced Cosmic Experience ✨",
 	}
 
-	lineHeight := 20.0
+	lineHeight := 22.0
 	totalHeight := float64(len(lines)) * lineHeight
 	startY := centerY - totalHeight/2
 
@@ -1223,46 +1191,25 @@ func (g *Game) drawTitleScreen(screen *ebiten.Image) {
 		x := centerX - approxWidth/2
 		y := startY + float64(i)*lineHeight
 
-		// Decide line color
-		var lineColor color.Color = color.White
+		// Decide line color based on green/black/red theme
+		var lineColor color.Color = color.RGBA{200, 255, 200, 255} // Light green default
 		switch {
 		case i == 0: // Title
-			// Pulsing glow
-			glowIntensity := 0.7 + 0.3*math.Sin(g.renderer.time*2)
-			for dx := -2; dx <= 2; dx++ {
-				for dy := -2; dy <= 2; dy++ {
-					if dx != 0 || dy != 0 {
-						alpha := uint8(80 * glowIntensity)
-						glowColor := color.RGBA{0, 255, 200, alpha}
-						text.Draw(screen, line, face, int(x)+dx, int(y)+dy, glowColor)
-					}
-				}
-			}
-			lineColor = color.RGBA{255, 255, 0, 255} // yellow title
-
-		case i == 2: // "Enhanced Features"
-			lineColor = color.RGBA{0, 200, 255, 255} // cyan-blue
-
+			lineColor = color.RGBA{0, 255, 100, 255} // Bright green title
+		case i == 2: // "Meteor Storm Edition"
+			lineColor = color.RGBA{255, 100, 100, 255} // Red accent
 		case i >= 3 && i <= 8: // feature list
-			lineColor = color.RGBA{180, 255, 180, 255} // light green
-
+			lineColor = color.RGBA{150, 255, 150, 255} // Light green
 		case i == 10: // "Controls"
-			lineColor = color.RGBA{255, 150, 0, 255} // orange
-
+			lineColor = color.RGBA{255, 200, 100, 255} // Yellow-orange
 		case i >= 11 && i <= 13: // control list
-			lineColor = color.RGBA{200, 200, 255, 255} // soft blue
-
+			lineColor = color.RGBA{200, 200, 255, 255} // Light blue
 		case i == 15: // "Statistics"
-			lineColor = color.RGBA{255, 100, 150, 255} // pink
-
+			lineColor = color.RGBA{255, 150, 150, 255} // Light red
 		case i >= 16 && i <= 17: // stats values
-			lineColor = color.RGBA{200, 255, 200, 255} // light green
-
+			lineColor = color.RGBA{255, 255, 200, 255} // Light yellow
 		case i >= 19 && i <= 20: // Launch instructions
-			lineColor = color.RGBA{255, 220, 100, 255} // golden
-
-		case i == 22: // closing line
-			lineColor = color.RGBA{150, 200, 255, 255} // pastel blue
+			lineColor = color.RGBA{100, 255, 100, 255} // Bright green
 		}
 
 		// Draw line with chosen color
@@ -1305,18 +1252,8 @@ func (g *Game) drawMenuScreen(screen *ebiten.Image) {
 
 	face := basicfont.Face7x13
 
-	// Title with glow
-	glow := 0.8 + 0.2*math.Sin(g.renderer.time*3)
-	for dx := -1; dx <= 1; dx++ {
-		for dy := -1; dy <= 1; dy++ {
-			if dx != 0 || dy != 0 {
-				alpha := uint8(100 * glow)
-				glowColor := color.RGBA{100, 200, 255, alpha}
-				text.Draw(screen, title, face, int(titleX)+dx, int(titleY)+dy, glowColor)
-			}
-		}
-	}
-	text.Draw(screen, title, face, int(titleX), int(titleY), color.White)
+	// Title in green
+	text.Draw(screen, title, face, int(titleX), int(titleY), color.RGBA{100, 255, 100, 255})
 
 	// Menu items
 	for i, item := range menuItems {
@@ -1325,26 +1262,16 @@ func (g *Game) drawMenuScreen(screen *ebiten.Image) {
 		y := startY + float64(i)*lineHeight
 
 		if i == g.menuOption {
-			// Selected option
+			// Selected option in bright green
 			prefix := "► "
 			suffix := " ◄"
 			fullText := prefix + item + suffix
 			fullWidth := float64(len(fullText)) * 9
 			fullX := centerX - fullWidth/2
 
-			selectionGlow := 0.7 + 0.3*math.Sin(g.renderer.time*4)
-			for dx := -1; dx <= 1; dx++ {
-				for dy := -1; dy <= 1; dy++ {
-					if dx != 0 || dy != 0 {
-						alpha := uint8(120 * selectionGlow)
-						highlightColor := color.RGBA{255, 255, 100, alpha}
-						text.Draw(screen, fullText, face, int(fullX)+dx, int(y)+dy, highlightColor)
-					}
-				}
-			}
-			text.Draw(screen, fullText, face, int(fullX), int(y), color.RGBA{255, 255, 150, 255})
+			text.Draw(screen, fullText, face, int(fullX), int(y), color.RGBA{0, 255, 100, 255})
 		} else {
-			text.Draw(screen, item, face, int(x), int(y), color.White)
+			text.Draw(screen, item, face, int(x), int(y), color.RGBA{150, 255, 150, 255})
 		}
 	}
 
@@ -1362,7 +1289,7 @@ func (g *Game) drawMenuScreen(screen *ebiten.Image) {
 			statWidth := float64(len(stat)) * 8
 			statX := centerX - statWidth/2
 			statY := statsY + float64(i)*25
-			text.Draw(screen, stat, face, int(statX), int(statY), color.RGBA{180, 220, 255, 255})
+			text.Draw(screen, stat, face, int(statX), int(statY), color.RGBA{200, 255, 200, 255})
 		}
 	}
 }
@@ -1381,29 +1308,17 @@ func (g *Game) drawPauseOverlay(screen *ebiten.Image) {
 
 	face := basicfont.Face7x13
 
-	// Pause text with glow
-	glow := 0.8 + 0.2*math.Sin(g.renderer.time*2)
-	for dx := -2; dx <= 2; dx++ {
-		for dy := -2; dy <= 2; dy++ {
-			if dx != 0 || dy != 0 {
-				alpha := uint8(100 * glow)
-				glowColor := color.RGBA{255, 255, 100, alpha}
-				text.Draw(screen, pauseText, face, int(centerX-textWidth/2)+dx, int(centerY)+dy, glowColor)
-			}
-		}
-	}
-
-	// Main pause text (white)
-	text.Draw(screen, pauseText, face, int(centerX-textWidth/2), int(centerY), color.White)
+	// Main pause text in green
+	text.Draw(screen, pauseText, face, int(centerX-textWidth/2), int(centerY), color.RGBA{100, 255, 100, 255})
 
 	// Instructions
 	instruction := "Press P to Resume or ESC for Menu"
 	instrWidth := float64(len(instruction)) * 8
-	text.Draw(screen, instruction, face, int(centerX-instrWidth/2), int(centerY+40), color.RGBA{200, 220, 255, 255})
+	text.Draw(screen, instruction, face, int(centerX-instrWidth/2), int(centerY+40), color.RGBA{200, 255, 200, 255})
 }
 
 func (g *Game) drawGameOverOverlay(screen *ebiten.Image) {
-	// Semi-transparent overlay
+	// Semi-transparent red overlay
 	overlay := ebiten.NewImage(g.screenWidth, g.screenHeight)
 	overlay.Fill(color.RGBA{50, 0, 0, 150})
 	screen.DrawImage(overlay, nil)
@@ -1413,25 +1328,12 @@ func (g *Game) drawGameOverOverlay(screen *ebiten.Image) {
 
 	face := basicfont.Face7x13
 
-	// Game Over text with dramatic effect
+	// Game Over text in red
 	gameOverText := "💀 MISSION FAILED 💀"
 	textWidth := float64(len(gameOverText)) * 12
+	text.Draw(screen, gameOverText, face, int(centerX-textWidth/2), int(centerY-50), color.RGBA{255, 100, 100, 255})
 
-	// Pulsing red glow
-	pulse := 0.6 + 0.4*math.Sin(g.renderer.time*3)
-	for dx := -3; dx <= 3; dx++ {
-		for dy := -3; dy <= 3; dy++ {
-			if dx != 0 || dy != 0 {
-				alpha := uint8(150 * pulse)
-				glowColor := color.RGBA{255, 100, 100, alpha}
-				text.Draw(screen, gameOverText, face, int(centerX-textWidth/2)+dx, int(centerY-50)+dy, glowColor)
-			}
-		}
-	}
-	// Main text in white
-	text.Draw(screen, gameOverText, face, int(centerX-textWidth/2), int(centerY-50), color.White)
-
-	// Final score
+	// Final score in white
 	finalScore := fmt.Sprintf("Final Score: %d", g.score)
 	scoreWidth := float64(len(finalScore)) * 10
 	text.Draw(screen, finalScore, face, int(centerX-scoreWidth/2), int(centerY), color.White)
@@ -1440,32 +1342,20 @@ func (g *Game) drawGameOverOverlay(screen *ebiten.Image) {
 	if g.score > g.gameData.HighScore {
 		newRecord := "🏆 NEW HIGH SCORE! 🏆"
 		recordWidth := float64(len(newRecord)) * 10
-
-		// Golden glow for new record
-		goldGlow := 0.7 + 0.3*math.Sin(g.renderer.time*4)
-		for dx := -2; dx <= 2; dx++ {
-			for dy := -2; dy <= 2; dy++ {
-				if dx != 0 || dy != 0 {
-					alpha := uint8(180 * goldGlow)
-					goldColor := color.RGBA{255, 215, 0, alpha}
-					text.Draw(screen, newRecord, face, int(centerX-recordWidth/2)+dx, int(centerY+30)+dy, goldColor)
-				}
-			}
-		}
-		text.Draw(screen, newRecord, face, int(centerX-recordWidth/2), int(centerY+30), color.RGBA{255, 255, 200, 255})
+		text.Draw(screen, newRecord, face, int(centerX-recordWidth/2), int(centerY+30), color.RGBA{255, 255, 100, 255})
 	}
 
 	// Instructions
 	instruction := "Press ENTER/R to Restart or ESC for Menu"
 	instrWidth := float64(len(instruction)) * 8
-	text.Draw(screen, instruction, face, int(centerX-instrWidth/2), int(centerY+80), color.RGBA{200, 220, 255, 255})
+	text.Draw(screen, instruction, face, int(centerX-instrWidth/2), int(centerY+80), color.RGBA{200, 255, 200, 255})
 }
 
 func (g *Game) drawHUD(screen *ebiten.Image) {
 	padding := 15.0
 	lineHeight := 18.0
 	
-	// Main HUD with better spacing
+	// Main HUD with green theme
 	lines := []string{
 		fmt.Sprintf("Score: %d | High: %d | Speed: %d", g.score, g.gameData.HighScore, maxSpeed-g.baseSpeed+minSpeed),
 		fmt.Sprintf("Length: %d | Combo: %dx (Best: %dx)", len(g.snake), g.combo, g.maxCombo),
@@ -1484,7 +1374,7 @@ func (g *Game) drawHUD(screen *ebiten.Image) {
 		effects = append(effects, fmt.Sprintf("🛡️ SHIELD: %ds", g.invulnerable/60+1))
 	}
 	
-	// Power-up indicator with icon
+	// Power-up indicator
 	if g.powerUp.active {
 		powerUpNames := []string{"💰 BONUS", "🚀 SPEED", "🛡️ SHIELD"}
 		effects = append(effects, fmt.Sprintf("%s: %ds", powerUpNames[g.powerUp.type_], g.powerUp.timer/60+1))
@@ -1497,17 +1387,19 @@ func (g *Game) drawHUD(screen *ebiten.Image) {
 		lines = append(lines, "F11: Fullscreen | ESC: Menu | P: Pause | +/-: Speed")
 	}
 	
-	// Draw HUD with subtle background
+	// Draw HUD with dark background
 	hudHeight := float64(len(lines)) * lineHeight + padding*2
-	hudBg := color.RGBA{0, 0, 0, 100}
+	hudBg := color.RGBA{0, 20, 0, 150} // Dark green background
 	ebitenutil.DrawRect(screen, 0, 0, 400, hudHeight, hudBg)
 	
 	for i, line := range lines {
 		y := padding + float64(i)*lineHeight
-		ebitenutil.DebugPrintAt(screen, line, int(padding), int(y))
+		// Draw text in bright green
+		face := basicfont.Face7x13
+		text.Draw(screen, line, face, int(padding), int(y), color.RGBA{100, 255, 100, 255})
 	}
 	
-	// Progress bars for effects with better visual design
+	// Progress bars for effects
 	barY := padding + float64(len(lines))*lineHeight + 10
 	barWidth := 250.0
 	barHeight := 6.0
@@ -1515,17 +1407,17 @@ func (g *Game) drawHUD(screen *ebiten.Image) {
 	if g.speedBoostTime > 0 {
 		progress := float64(g.speedBoostTime) / 300.0
 		// Background
-		ebitenutil.DrawRect(screen, padding, barY, barWidth, barHeight, color.RGBA{30, 30, 30, 180})
-		// Progress with gradient effect
-		ebitenutil.DrawRect(screen, padding, barY, barWidth*progress, barHeight, color.RGBA{255, 150, 50, 255})
+		ebitenutil.DrawRect(screen, padding, barY, barWidth, barHeight, color.RGBA{20, 20, 20, 180})
+		// Progress in bright green
+		ebitenutil.DrawRect(screen, padding, barY, barWidth*progress, barHeight, color.RGBA{100, 255, 100, 255})
 		barY += barHeight + 8
 	}
 	
 	if g.invulnerable > 0 {
 		progress := float64(g.invulnerable) / 180.0
 		// Background
-		ebitenutil.DrawRect(screen, padding, barY, barWidth, barHeight, color.RGBA{30, 30, 30, 180})
-		// Progress
+		ebitenutil.DrawRect(screen, padding, barY, barWidth, barHeight, color.RGBA{20, 20, 20, 180})
+		// Progress in blue
 		ebitenutil.DrawRect(screen, padding, barY, barWidth*progress, barHeight, color.RGBA{100, 150, 255, 255})
 	}
 }
@@ -1546,7 +1438,7 @@ func (g *Game) Layout(outsideWidth, outsideHeight int) (screenWidth, screenHeigh
 
 func main() {
 	ebiten.SetWindowSize(1280, 720)
-	ebiten.SetWindowTitle("Cosmic Snake - Enhanced Fullscreen Experience")
+	ebiten.SetWindowTitle("Cosmic Snake - Meteor Storm Edition")
 	ebiten.SetWindowResizable(true)
 	ebiten.SetWindowSizeLimits(800, 600, -1, -1)
 	
