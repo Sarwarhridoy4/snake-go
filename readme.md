@@ -193,6 +193,32 @@ Opens the game in a **1280x720 window** titled `Snake — Go + Ebiten`.
 
 ---
 
+## Screenshots
+
+### Menu →
+
+![Menu Screen](screenshots/menu.png)
+
+> **Note:** This screenshot shows the game's menu navigation leading to the menu screen.
+
+### Menu → Submenu
+
+![Submenu Screen](screenshots/submenu.png)
+
+> **Note:** This screenshot shows the game's menu navigation leading to the submenu screen.
+
+### Menu → Submenu → Game
+
+![Game Screen](screenshots/game.png)
+
+> **Note:** This screenshot shows the game's menu navigation leading to the game screen.
+
+### Menu → Submenu → Game Over
+
+![Game Over Screen](screenshots/game_over.png)
+
+> **Note:** This screenshot shows the game's menu navigation leading to the game over screen.
+
 ## Developer
 
 - **Developed by:** Sarwar Hossain
