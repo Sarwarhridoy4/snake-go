@@ -15,27 +15,22 @@ import (
 	"github.com/hajimehoshi/ebiten/v2/audio"
 	"github.com/hajimehoshi/ebiten/v2/ebitenutil"
 	"github.com/hajimehoshi/ebiten/v2/inpututil"
+	"github.com/hajimehoshi/ebiten/v2/text"
+
+	"golang.org/x/image/font/basicfont"
 )
 
 const (
-	cellSize   = 20
-	gridW      = 32
-	gridH      = 24
-	minSpeed   = 4
-	maxSpeed   = 20
-	sampleRate = 44100
-	saveFile   = "snake_enhanced.json"
+	baseCellSize = 20
+	baseGridW    = 32
+	baseGridH    = 24
+	minSpeed     = 4
+	maxSpeed     = 20
+	sampleRate   = 44100
+	saveFile     = "snake_enhanced.json"
 )
 
-var (
-	bgColor     = color.RGBA{15, 15, 20, 255}
-	gridColor   = color.RGBA{30, 30, 40, 255}
-	headColor   = color.RGBA{100, 255, 150, 255}
-	bodyColor   = color.RGBA{70, 200, 120, 255}
-	foodColor   = color.RGBA{255, 80, 80, 255}
-	bonusColor  = color.RGBA{255, 215, 0, 255}
-	shadowColor = color.RGBA{0, 0, 0, 100}
-)
+// ==================== TYPES ====================
 
 type Point struct{ X, Y int }
 type Vector2 struct{ X, Y float64 }
@@ -47,14 +42,17 @@ type Particle struct {
 	maxLife  float64
 	color    color.RGBA
 	size     float64
+	rotation float64
+	rotVel   float64
 }
 
 type PowerUp struct {
 	pos      Point
-	type_    int // 0: bonus points, 1: speed boost, 2: slow motion
+	type_    int // 0: bonus points, 1: speed boost, 2: invulnerability
 	timer    int
 	active   bool
 	pulse    float64
+	sparkles []Particle
 }
 
 type GameData struct {
@@ -65,7 +63,49 @@ type GameData struct {
 	PlayTime     int64 `json:"play_time_seconds"`
 }
 
+type GameState int
+
+const (
+	StateTitleScreen GameState = iota
+	StateMenu
+	StatePlaying
+	StatePaused
+	StateGameOver
+)
+
+type Renderer struct {
+	game           *Game
+	backgroundGrid [][]BackgroundCell
+	starField      []Star
+	nebulaClouds   []NebulaCloud
+	time           float64
+}
+
+type BackgroundCell struct {
+	intensity  float64
+	phase      float64
+	colorShift float64
+}
+
+type Star struct {
+	pos       Vector2
+	brightness float64
+	twinkle    float64
+	speed      float64
+	size       float64
+}
+
+type NebulaCloud struct {
+	pos     Vector2
+	size    float64
+	color   color.RGBA
+	drift   Vector2
+	opacity float64
+	phase   float64
+}
+
 type Game struct {
+	// Core game state
 	snake          []Point
 	dir            Point
 	nextDir        Point
@@ -79,29 +119,32 @@ type Game struct {
 	baseSpeed      int
 	score          int
 	gameData       GameData
-	gameOver       bool
-	paused         bool
-	inTitle        bool
-	inMenu         bool
-	menuOption     int
 	combo          int
 	maxCombo       int
 	comboTimer     int
+	gameStartTime  time.Time
+
+	// Game state management
+	state         GameState
+	menuOption    int
+	isFullscreen  bool
+
+	// Visual effects
 	foodPulse      float64
 	scaleFactor    float64
-	isFullscreen   bool
-	gameStartTime  time.Time
+	screenWidth    int
+	screenHeight   int
+	gridW          int
+	gridH          int
+	cellSize       int
 	speedBoostTime int
 	slowMotionTime int
 	invulnerable   int
 	shakeIntensity float64
-
-	// Enhanced visual effects
 	trailOpacity   []float64
 	headPulse      float64
-	backgroundWave float64
-	
-	// Audio
+
+	// Audio system
 	audioCtx       *audio.Context
 	eatPlayer      *audio.Player
 	comboPlayer    *audio.Player
@@ -109,31 +152,104 @@ type Game struct {
 	gameOverPlayer *audio.Player
 	bgLoop         *audio.InfiniteLoop
 	bgPlayer       *audio.Player
+
+	// Renderer
+	renderer *Renderer
 }
+
+// ==================== COLOR PALETTE ====================
+
+var (
+	// Base colors
+	bgColor     = color.RGBA{8, 10, 25, 255}      // Deep space blue
+	gridColor   = color.RGBA{25, 30, 50, 80}      // Subtle grid
+	headColor   = color.RGBA{0, 255, 180, 255}    // Bright cyan
+	bodyColor   = color.RGBA{0, 200, 150, 255}    // Ocean green
+	foodColor   = color.RGBA{255, 100, 120, 255}  // Coral pink
+	bonusColor  = color.RGBA{255, 215, 0, 255}    // Gold
+	shadowColor = color.RGBA{0, 0, 0, 120}
+
+	// Nebula colors
+	nebulaColors = []color.RGBA{
+		{120, 50, 200, 30},   // Purple
+		{50, 150, 255, 25},   // Blue
+		{255, 100, 150, 20},  // Pink
+		{100, 255, 200, 25},  // Cyan
+		{255, 200, 50, 20},   // Yellow
+	}
+
+	// Star colors
+	starColors = []color.RGBA{
+		{255, 255, 255, 255}, // White
+		{200, 220, 255, 255}, // Blue white
+		{255, 240, 200, 255}, // Warm white
+		{255, 200, 150, 255}, // Orange
+	}
+)
+
+// ==================== INITIALIZATION ====================
 
 func NewGame() *Game {
 	g := &Game{
-		rng: rand.New(rand.NewSource(time.Now().UnixNano())),
+		rng:        rand.New(rand.NewSource(time.Now().UnixNano())),
 		menuOption: 0,
+		state:      StateTitleScreen,
 	}
+	
 	g.loadGameData()
+	g.initializeAudio()
+	g.initializeRenderer()
+	g.resetGameplay()
+	
+	return g
+}
 
+func (g *Game) initializeAudio() {
 	g.audioCtx = audio.NewContext(sampleRate)
 	g.eatPlayer = newBeepPlayer(g.audioCtx, 880, 0.1)
 	g.comboPlayer = newBeepPlayer(g.audioCtx, 1320, 0.12)
 	g.powerUpPlayer = newBeepPlayer(g.audioCtx, 1100, 0.2)
 	g.gameOverPlayer = newBeepPlayer(g.audioCtx, 220, 0.5)
 	g.bgLoop, g.bgPlayer = newBackgroundLoop(g.audioCtx)
-
-	g.inTitle = true
-	g.inMenu = false
-	g.baseSpeed = 10
-	g.speed = g.baseSpeed
-	g.scaleFactor = 1.0
-	g.isFullscreen = false
-	g.particles = make([]Particle, 0, 100)
-	return g
 }
+
+func (g *Game) initializeRenderer() {
+	g.renderer = &Renderer{game: g}
+	g.renderer.initializeBackground()
+}
+
+func (g *Game) calculatePlayfieldDimensions() {
+	// Calculate optimal grid size based on screen dimensions
+	maxCellsW := g.screenWidth / 15  // Minimum cell size of 15 pixels
+	maxCellsH := g.screenHeight / 15
+	
+	// Use aspect ratio to maintain good gameplay
+	aspectRatio := float64(g.screenWidth) / float64(g.screenHeight)
+	
+	if aspectRatio > 1.5 { // Wide screen
+		g.gridW = int(math.Min(float64(maxCellsW), 50))
+		g.gridH = int(float64(g.gridW) / aspectRatio)
+	} else { // Standard or tall screen
+		g.gridH = int(math.Min(float64(maxCellsH), 40))
+		g.gridW = int(float64(g.gridH) * aspectRatio)
+	}
+	
+	// Ensure minimum playfield size
+	if g.gridW < 20 { g.gridW = 20 }
+	if g.gridH < 15 { g.gridH = 15 }
+	
+	// Calculate cell size that fits the screen perfectly
+	cellSizeW := g.screenWidth / g.gridW
+	cellSizeH := g.screenHeight / g.gridH
+	g.cellSize = int(math.Min(float64(cellSizeW), float64(cellSizeH)))
+	
+	g.scaleFactor = float64(g.cellSize) / float64(baseCellSize)
+}
+
+// ==================== AUDIO SYSTEM ====================
+
+
+// ==================== AUDIO SYSTEM ====================
 
 func newBeepPlayer(ctx *audio.Context, freq float64, durSec float64) *audio.Player {
 	n := int(float64(sampleRate) * durSec)
@@ -141,40 +257,53 @@ func newBeepPlayer(ctx *audio.Context, freq float64, durSec float64) *audio.Play
 	for i := 0; i < n; i++ {
 		t := float64(i) / sampleRate
 		envelope := math.Pow(math.E, -3*t)
-		v := int16(math.Sin(2*math.Pi*freq*t) * 6000 * envelope)
+		harmonics := math.Sin(2*math.Pi*freq*t) + 
+					0.3*math.Sin(2*math.Pi*freq*2*t) +
+					0.1*math.Sin(2*math.Pi*freq*3*t)
+		v := int16(harmonics * 4000 * envelope)
 		for ch := 0; ch < 2; ch++ {
 			idx := i*4 + ch*2
 			buf[idx] = byte(v)
 			buf[idx+1] = byte(v >> 8)
 		}
 	}
-	return ctx.NewPlayerFromBytes(buf)
+	player := ctx.NewPlayerFromBytes(buf)
+	return player
 }
 
 func newBackgroundLoop(ctx *audio.Context) (*audio.InfiniteLoop, *audio.Player) {
-	// More complex melody
-	notes := []float64{261.63, 329.63, 392.00, 523.25, 493.88, 440.00, 392.00, 329.63}
-	durSec := 0.4
+	// Ambient space-like background music
+	notes := []float64{130.81, 146.83, 164.81, 174.61, 196.00, 220.00, 246.94, 261.63}
+	durSec := 2.0
 	totalSamples := int(float64(sampleRate) * durSec * float64(len(notes)))
 	buf := make([]byte, totalSamples*4)
 	idx := 0
 	
-	for i, freq := range notes {
-		for j := 0; j < int(float64(sampleRate)*durSec); j++ {
+	for _, freq := range notes {
+		samplesPerNote := int(float64(sampleRate) * durSec)
+		for j := 0; j < samplesPerNote; j++ {
 			t := float64(j) / sampleRate
-			// Add harmony
-			harmony := freq * 1.25
-			envelope := math.Pow(math.E, -1.5*t)
-			v1 := math.Sin(2*math.Pi*freq*t) * 1500 * envelope
-			v2 := math.Sin(2*math.Pi*harmony*t) * 800 * envelope
-			// Add slight variation based on note position
-			variation := math.Sin(2*math.Pi*freq*t*float64(i+1)*0.1) * 300 * envelope
-			v := int16(v1 + v2 + variation)
+			
+			// Create ambient pad sound
+			fundamental := math.Sin(2*math.Pi*freq*t)
+			fifth := math.Sin(2*math.Pi*freq*1.5*t) * 0.5
+			octave := math.Sin(2*math.Pi*freq*2*t) * 0.3
+			
+			// Slow envelope for ambient feel
+			envelope := 0.5 * (1 + math.Sin(2*math.Pi*t/durSec - math.Pi/2))
+			if envelope > 1 { envelope = 1 }
+			
+			// Add some ethereal modulation
+			modulation := 1 + 0.1*math.Sin(2*math.Pi*t*0.5)
+			
+			v := int16((fundamental + fifth + octave) * 800 * envelope * modulation)
 			
 			for ch := 0; ch < 2; ch++ {
-				buf[idx] = byte(v)
-				buf[idx+1] = byte(v >> 8)
-				idx += 2
+				if idx < len(buf) {
+					buf[idx] = byte(v)
+					buf[idx+1] = byte(v >> 8)
+					idx += 2
+				}
 			}
 		}
 	}
@@ -188,8 +317,216 @@ func newBackgroundLoop(ctx *audio.Context) (*audio.InfiniteLoop, *audio.Player) 
 	return loop, player
 }
 
-func (g *Game) reset() {
-	midX, midY := gridW/2, gridH/2
+// ==================== BACKGROUND RENDERER ====================
+
+func (r *Renderer) initializeBackground() {
+	// Initialize animated background grid
+	r.backgroundGrid = make([][]BackgroundCell, baseGridW*2)
+	for x := range r.backgroundGrid {
+		r.backgroundGrid[x] = make([]BackgroundCell, baseGridH*2)
+		for y := range r.backgroundGrid[x] {
+			r.backgroundGrid[x][y] = BackgroundCell{
+				intensity:  r.game.rng.Float64() * 0.5,
+				phase:      r.game.rng.Float64() * 2 * math.Pi,
+				colorShift: r.game.rng.Float64() * 2 * math.Pi,
+			}
+		}
+	}
+	
+	// Initialize star field
+	starCount := 150
+	r.starField = make([]Star, starCount)
+	for i := range r.starField {
+		r.starField[i] = Star{
+			pos: Vector2{
+				X: r.game.rng.Float64() * 1920, // Large enough for any screen
+				Y: r.game.rng.Float64() * 1080,
+			},
+			brightness: 0.3 + r.game.rng.Float64()*0.7,
+			twinkle:    r.game.rng.Float64() * 2 * math.Pi,
+			speed:      0.1 + r.game.rng.Float64()*0.3,
+			size:       1 + r.game.rng.Float64()*2,
+		}
+	}
+	
+	// Initialize nebula clouds
+	nebulaCount := 8
+	r.nebulaClouds = make([]NebulaCloud, nebulaCount)
+	for i := range r.nebulaClouds {
+		r.nebulaClouds[i] = NebulaCloud{
+			pos: Vector2{
+				X: r.game.rng.Float64() * 1920,
+				Y: r.game.rng.Float64() * 1080,
+			},
+			size:    100 + r.game.rng.Float64()*300,
+			color:   nebulaColors[r.game.rng.Intn(len(nebulaColors))],
+			drift:   Vector2{(r.game.rng.Float64()-0.5)*0.2, (r.game.rng.Float64()-0.5)*0.2},
+			opacity: 0.3 + r.game.rng.Float64()*0.4,
+			phase:   r.game.rng.Float64() * 2 * math.Pi,
+		}
+	}
+}
+
+func (r *Renderer) drawSpaceBackground(screen *ebiten.Image) {
+	r.time += 0.016 // Assuming 60 FPS
+	
+	// Fill with deep space color
+	screen.Fill(bgColor)
+	
+	// Draw nebula clouds
+	r.drawNebulaClouds(screen)
+	
+	// Draw stars with twinkling effect
+	r.drawStarField(screen)
+	
+	// Draw animated grid overlay
+	r.drawAnimatedGrid(screen)
+}
+
+func (r *Renderer) drawNebulaClouds(screen *ebiten.Image) {
+	for i := range r.nebulaClouds {
+		cloud := &r.nebulaClouds[i]
+		
+		// Update cloud position
+		cloud.pos.X += cloud.drift.X
+		cloud.pos.Y += cloud.drift.Y
+		cloud.phase += 0.005
+		
+		// Wrap around screen
+		if cloud.pos.X < -cloud.size { cloud.pos.X = float64(r.game.screenWidth) + cloud.size }
+		if cloud.pos.X > float64(r.game.screenWidth)+cloud.size { cloud.pos.X = -cloud.size }
+		if cloud.pos.Y < -cloud.size { cloud.pos.Y = float64(r.game.screenHeight) + cloud.size }
+		if cloud.pos.Y > float64(r.game.screenHeight)+cloud.size { cloud.pos.Y = -cloud.size }
+		
+		// Draw cloud as multiple overlapping circles with varying opacity
+		cloudOpacity := cloud.opacity * (0.8 + 0.2*math.Sin(cloud.phase))
+		numRings := 5
+		
+		for ring := 0; ring < numRings; ring++ {
+			ringSize := cloud.size * (0.3 + float64(ring)*0.2)
+			ringOpacity := cloudOpacity / float64(numRings-ring+1)
+			
+			// Create gradient effect
+			for radius := ringSize; radius > 0; radius -= 5 {
+				alpha := uint8(float64(cloud.color.A) * ringOpacity * (radius/ringSize))
+				if alpha > 0 {
+					cloudColor := color.RGBA{cloud.color.R, cloud.color.G, cloud.color.B, alpha}
+					ebitenutil.DrawRect(screen, 
+						cloud.pos.X - radius/2, 
+						cloud.pos.Y - radius/2,
+						radius, radius, cloudColor)
+				}
+			}
+		}
+	}
+}
+
+func (r *Renderer) drawStarField(screen *ebiten.Image) {
+	for i := range r.starField {
+		star := &r.starField[i]
+		
+		// Update twinkle effect
+		star.twinkle += star.speed * 0.1
+		twinkleFactor := 0.7 + 0.3*math.Sin(star.twinkle)
+		
+		// Calculate final brightness and size
+		finalBrightness := star.brightness * twinkleFactor
+		finalSize := star.size * (0.8 + 0.4*twinkleFactor)
+		
+		// Choose star color based on brightness
+		starColor := starColors[i%len(starColors)]
+		alpha := uint8(float64(starColor.A) * finalBrightness)
+		finalColor := color.RGBA{starColor.R, starColor.G, starColor.B, alpha}
+		
+		// Draw star with glow effect
+		if finalSize > 1.5 {
+			// Draw outer glow
+			glowSize := finalSize * 1.5
+			glowAlpha := alpha / 3
+			glowColor := color.RGBA{starColor.R, starColor.G, starColor.B, glowAlpha}
+			ebitenutil.DrawRect(screen,
+				star.pos.X - glowSize/2,
+				star.pos.Y - glowSize/2,
+				glowSize, glowSize, glowColor)
+		}
+		
+		// Draw star core
+		ebitenutil.DrawRect(screen,
+			star.pos.X - finalSize/2,
+			star.pos.Y - finalSize/2,
+			finalSize, finalSize, finalColor)
+	}
+}
+
+func (r *Renderer) drawAnimatedGrid(screen *ebiten.Image) {
+	if r.game.gridW == 0 || r.game.gridH == 0 {
+		return
+	}
+	
+	// Only draw grid during gameplay
+	if r.game.state != StatePlaying && r.game.state != StatePaused {
+		return
+	}
+	
+	// Calculate grid offset to center the playfield
+	offsetX := (r.game.screenWidth - r.game.gridW*r.game.cellSize) / 2
+	offsetY := (r.game.screenHeight - r.game.gridH*r.game.cellSize) / 2
+	
+	// Draw animated background cells within the playfield
+	for x := 0; x < r.game.gridW; x++ {
+		for y := 0; y < r.game.gridH; y++ {
+			// Use modulo to wrap background pattern
+			bgX := x % len(r.backgroundGrid)
+			bgY := y % len(r.backgroundGrid[0])
+			cell := &r.backgroundGrid[bgX][bgY]
+			
+			// Create wave pattern
+			wave := math.Sin(r.time*0.5 + cell.phase + float64(x+y)*0.2)
+			colorWave := math.Sin(r.time*0.3 + cell.colorShift)
+			
+			intensity := cell.intensity + wave*0.1
+			if intensity < 0 { intensity = 0 }
+			if intensity > 0.6 { intensity = 0.6 }
+			
+			// Create color variation
+			baseIntensity := int(intensity * 255)
+			red := uint8(baseIntensity + int(colorWave*20))
+			green := uint8(baseIntensity + int(math.Sin(colorWave+1.0)*15))
+			blue := uint8(baseIntensity + int(math.Sin(colorWave+2.0)*25))
+			
+			cellColor := color.RGBA{red, green, blue, 40}
+			
+			cellX := float64(offsetX + x*r.game.cellSize)
+			cellY := float64(offsetY + y*r.game.cellSize)
+			cellSize := float64(r.game.cellSize)
+			
+			ebitenutil.DrawRect(screen, cellX, cellY, cellSize, cellSize, cellColor)
+		}
+	}
+	
+	// Draw grid lines with glow effect
+	gridAlpha := uint8(60 + 20*math.Sin(r.time*0.5))
+	gridColor := color.RGBA{50, 80, 120, gridAlpha}
+	
+	// Vertical lines
+	for x := 0; x <= r.game.gridW; x++ {
+		lineX := float64(offsetX + x*r.game.cellSize)
+		ebitenutil.DrawRect(screen, lineX-0.5, float64(offsetY), 1, float64(r.game.gridH*r.game.cellSize), gridColor)
+	}
+	
+	// Horizontal lines
+	for y := 0; y <= r.game.gridH; y++ {
+		lineY := float64(offsetY + y*r.game.cellSize)
+		ebitenutil.DrawRect(screen, float64(offsetX), lineY-0.5, float64(r.game.gridW*r.game.cellSize), 1, gridColor)
+	}
+}
+
+// ==================== GAME STATE MANAGEMENT ====================
+
+func (g *Game) resetGameplay() {
+	g.calculatePlayfieldDimensions()
+	
+	midX, midY := g.gridW/2, g.gridH/2
 	g.snake = []Point{{midX, midY}, {midX-1, midY}, {midX-2, midY}}
 	g.dir = Point{1, 0}
 	g.nextDir = g.dir
@@ -199,13 +536,9 @@ func (g *Game) reset() {
 	g.combo = 0
 	g.maxCombo = 0
 	g.comboTimer = 0
-	g.gameOver = false
-	g.paused = false
-	g.inTitle = false
-	g.inMenu = false
+	g.state = StatePlaying
 	g.foodPulse = 0
 	g.headPulse = 0
-	g.backgroundWave = 0
 	g.speedBoostTime = 0
 	g.slowMotionTime = 0
 	g.invulnerable = 0
@@ -215,6 +548,8 @@ func (g *Game) reset() {
 	g.trailOpacity = make([]float64, len(g.snake))
 	g.powerUp = PowerUp{}
 	g.gameStartTime = time.Now()
+	g.baseSpeed = 10
+	
 	g.placeFood()
 	g.bgPlayer.Rewind()
 	g.bgPlayer.Play()
@@ -234,9 +569,11 @@ func (g *Game) saveGameData() {
 	os.WriteFile(saveFile, data, 0644)
 }
 
+// ==================== GAME LOGIC ====================
+
 func (g *Game) placeFood() {
 	for {
-		f := Point{g.rng.Intn(gridW), g.rng.Intn(gridH)}
+		f := Point{g.rng.Intn(g.gridW), g.rng.Intn(g.gridH)}
 		occupied := false
 		for _, s := range g.snake {
 			if s == f {
@@ -244,7 +581,7 @@ func (g *Game) placeFood() {
 				break
 			}
 		}
-		if !occupied {
+		if !occupied && (g.powerUp.pos != f || !g.powerUp.active) {
 			g.food = f
 			return
 		}
@@ -257,7 +594,7 @@ func (g *Game) placePowerUp() {
 	}
 	
 	for {
-		p := Point{g.rng.Intn(gridW), g.rng.Intn(gridH)}
+		p := Point{g.rng.Intn(g.gridW), g.rng.Intn(g.gridH)}
 		if p == g.food {
 			continue
 		}
@@ -275,6 +612,7 @@ func (g *Game) placePowerUp() {
 				timer:  600, // 10 seconds at 60fps
 				active: true,
 				pulse:  0,
+				sparkles: make([]Particle, 0, 10),
 			}
 			return
 		}
@@ -282,16 +620,25 @@ func (g *Game) placePowerUp() {
 }
 
 func (g *Game) addParticles(pos Point, count int, particleColor color.RGBA) {
+	// Calculate screen position considering playfield offset
+	offsetX := (g.screenWidth - g.gridW*g.cellSize) / 2
+	offsetY := (g.screenHeight - g.gridH*g.cellSize) / 2
+	
+	screenX := float64(offsetX + pos.X*g.cellSize + g.cellSize/2)
+	screenY := float64(offsetY + pos.Y*g.cellSize + g.cellSize/2)
+	
 	for i := 0; i < count; i++ {
 		angle := float64(i) * 2 * math.Pi / float64(count) + g.rng.Float64()*0.5
-		speed := 2.0 + g.rng.Float64()*3.0
+		speed := 2.0 + g.rng.Float64()*4.0
 		g.particles = append(g.particles, Particle{
-			pos:     Vector2{float64(pos.X*cellSize + cellSize/2), float64(pos.Y*cellSize + cellSize/2)},
-			vel:     Vector2{math.Cos(angle) * speed, math.Sin(angle) * speed},
-			life:    1.0,
-			maxLife: 0.8 + g.rng.Float64()*0.4,
-			color:   particleColor,
-			size:    3.0 + g.rng.Float64()*2.0,
+			pos:      Vector2{screenX, screenY},
+			vel:      Vector2{math.Cos(angle) * speed, math.Sin(angle) * speed},
+			life:     1.0,
+			maxLife:  0.8 + g.rng.Float64()*0.4,
+			color:    particleColor,
+			size:     2.0 + g.rng.Float64()*3.0,
+			rotation: g.rng.Float64() * 2 * math.Pi,
+			rotVel:   (g.rng.Float64() - 0.5) * 0.3,
 		})
 	}
 }
@@ -303,6 +650,7 @@ func (g *Game) updateParticles() {
 		p.pos.Y += p.vel.Y
 		p.vel.X *= 0.98
 		p.vel.Y *= 0.98
+		p.rotation += p.rotVel
 		p.life -= 1.0 / 60.0 / p.maxLife
 		p.size *= 0.99
 		
@@ -312,84 +660,127 @@ func (g *Game) updateParticles() {
 	}
 }
 
+// ==================== MAIN UPDATE FUNCTION ====================
+
 func (g *Game) Update() error {
-	// Global controls
-	if inpututil.IsKeyJustPressed(ebiten.KeyF) {
+	g.handleGlobalInput()
+	
+	switch g.state {
+	case StateTitleScreen:
+		return g.updateTitleScreen()
+	case StateMenu:
+		return g.updateMenu()
+	case StatePlaying:
+		return g.updateGameplay()
+	case StatePaused:
+		return g.updatePaused()
+	case StateGameOver:
+		return g.updateGameOver()
+	}
+	
+	return nil
+}
+
+func (g *Game) handleGlobalInput() {
+	// Fullscreen toggle
+	if inpututil.IsKeyJustPressed(ebiten.KeyF11) {
 		g.isFullscreen = !g.isFullscreen
-		if g.isFullscreen {
-			ebiten.MaximizeWindow()
-		} else {
-			ebiten.RestoreWindow()
-			ebiten.SetWindowSize(1280, 720)
-		}
+		ebiten.SetFullscreen(g.isFullscreen)
 	}
 
+	// Escape key handling
 	if inpututil.IsKeyJustPressed(ebiten.KeyEscape) {
-		if g.isFullscreen {
-			g.isFullscreen = false
-			ebiten.RestoreWindow()
-			ebiten.SetWindowSize(1280, 720)
-		} else if !g.inTitle && !g.gameOver {
-			g.inMenu = !g.inMenu
-			if g.inMenu {
-				g.paused = true
-				g.bgPlayer.Pause()
+		switch g.state {
+		case StatePlaying:
+			g.state = StateMenu
+			g.bgPlayer.Pause()
+		case StatePaused:
+			g.state = StateMenu
+		case StateMenu:
+			if g.score > 0 { // Game in progress
+				g.state = StatePlaying
+				g.bgPlayer.Play()
 			} else {
-				g.paused = false
+				g.state = StateTitleScreen
+			}
+		}
+	}
+}
+
+func (g *Game) updateTitleScreen() error {
+	g.renderer.time += 0.016
+	
+	if inpututil.IsKeyJustPressed(ebiten.KeyEnter) || inpututil.IsKeyJustPressed(ebiten.KeySpace) {
+		g.resetGameplay()
+	}
+	if inpututil.IsKeyJustPressed(ebiten.KeyS) {
+		g.state = StateMenu
+		g.menuOption = 2 // Statistics option
+	}
+	return nil
+}
+
+func (g *Game) updateMenu() error {
+	if inpututil.IsKeyJustPressed(ebiten.KeyArrowUp) || inpututil.IsKeyJustPressed(ebiten.KeyW) {
+		g.menuOption = (g.menuOption - 1 + 4) % 4
+	}
+	if inpututil.IsKeyJustPressed(ebiten.KeyArrowDown) || inpututil.IsKeyJustPressed(ebiten.KeyS) {
+		g.menuOption = (g.menuOption + 1) % 4
+	}
+	if inpututil.IsKeyJustPressed(ebiten.KeyEnter) || inpututil.IsKeyJustPressed(ebiten.KeySpace) {
+		switch g.menuOption {
+		case 0: // Resume/New Game
+			if g.state == StateGameOver || g.score == 0 {
+				g.resetGameplay()
+			} else {
+				g.state = StatePlaying
 				g.bgPlayer.Play()
 			}
-		}
-	}
-
-	if g.inTitle {
-		if inpututil.IsKeyJustPressed(ebiten.KeyEnter) || inpututil.IsKeyJustPressed(ebiten.KeySpace) {
-			g.reset()
-		}
-		if inpututil.IsKeyJustPressed(ebiten.KeyS) {
-			g.inMenu = true
-			g.inTitle = false
-		}
-		return nil
-	}
-
-	if g.inMenu {
-		if inpututil.IsKeyJustPressed(ebiten.KeyArrowUp) || inpututil.IsKeyJustPressed(ebiten.KeyW) {
-			g.menuOption = (g.menuOption - 1 + 4) % 4
-		}
-		if inpututil.IsKeyJustPressed(ebiten.KeyArrowDown) || inpututil.IsKeyJustPressed(ebiten.KeyS) {
-			g.menuOption = (g.menuOption + 1) % 4
-		}
-		if inpututil.IsKeyJustPressed(ebiten.KeyEnter) || inpututil.IsKeyJustPressed(ebiten.KeySpace) {
-			switch g.menuOption {
-			case 0: // Resume
-				if !g.gameOver {
-					g.inMenu = false
-					g.paused = false
-					g.bgPlayer.Play()
-				}
-			case 1: // New Game
-				g.reset()
-			case 2: // Reset Stats
-				g.gameData = GameData{}
-				g.saveGameData()
-			case 3: // Back to Title
-				g.inTitle = true
-				g.inMenu = false
-				g.paused = false
-				g.bgPlayer.Pause()
-			}
-		}
-		return nil
-	}
-
-	// Game controls
-	if inpututil.IsKeyJustPressed(ebiten.KeyP) && !g.gameOver {
-		g.paused = !g.paused
-		if g.paused {
+		case 1: // New Game
+			g.resetGameplay()
+		case 2: // Reset Stats
+			g.gameData = GameData{}
+			g.saveGameData()
+		case 3: // Back to Title
+			g.state = StateTitleScreen
 			g.bgPlayer.Pause()
-		} else {
-			g.bgPlayer.Play()
 		}
+	}
+	return nil
+}
+
+func (g *Game) updatePaused() error {
+	if inpututil.IsKeyJustPressed(ebiten.KeyP) {
+		g.state = StatePlaying
+		g.bgPlayer.Play()
+	}
+	return nil
+}
+
+func (g *Game) updateGameOver() error {
+	if inpututil.IsKeyJustPressed(ebiten.KeyEnter) || inpututil.IsKeyJustPressed(ebiten.KeyR) {
+		// Update stats
+		g.gameData.TotalGames++
+		g.gameData.TotalScore += g.score
+		if g.score > g.gameData.HighScore {
+			g.gameData.HighScore = g.score
+		}
+		if g.maxCombo > g.gameData.BestCombo {
+			g.gameData.BestCombo = g.maxCombo
+		}
+		g.gameData.PlayTime += int64(time.Since(g.gameStartTime).Seconds())
+		g.saveGameData()
+		g.resetGameplay()
+	}
+	return nil
+}
+
+func (g *Game) updateGameplay() error {
+	// Pause toggle
+	if inpututil.IsKeyJustPressed(ebiten.KeyP) {
+		g.state = StatePaused
+		g.bgPlayer.Pause()
+		return nil
 	}
 
 	// Speed controls
@@ -402,25 +793,6 @@ func (g *Game) Update() error {
 		if g.baseSpeed < maxSpeed {
 			g.baseSpeed++
 		}
-	}
-
-	if g.gameOver {
-		g.bgPlayer.Pause()
-		if inpututil.IsKeyJustPressed(ebiten.KeyEnter) || inpututil.IsKeyJustPressed(ebiten.KeyR) {
-			// Update stats
-			g.gameData.TotalGames++
-			g.gameData.TotalScore += g.score
-			if g.score > g.gameData.HighScore {
-				g.gameData.HighScore = g.score
-			}
-			if g.maxCombo > g.gameData.BestCombo {
-				g.gameData.BestCombo = g.maxCombo
-			}
-			g.gameData.PlayTime += int64(time.Since(g.gameStartTime).Seconds())
-			g.saveGameData()
-			g.reset()
-		}
-		return nil
 	}
 
 	// Movement input
@@ -438,16 +810,13 @@ func (g *Game) Update() error {
 		if dir.X != -1 { g.nextDir = Point{1, 0} }
 	}
 
-	if g.paused {
-		return nil
-	}
-
-	// Update timers and effects
+	// Update game state
 	g.frame++
 	g.foodPulse += 0.08
 	g.headPulse += 0.1
-	g.backgroundWave += 0.02
+	g.renderer.time += 0.016
 	
+	// Update timers
 	if g.speedBoostTime > 0 {
 		g.speedBoostTime--
 		g.speed = g.baseSpeed / 2
@@ -470,6 +839,17 @@ func (g *Game) Update() error {
 	if g.powerUp.active {
 		g.powerUp.timer--
 		g.powerUp.pulse += 0.12
+		
+		// Add sparkle effects to power-ups
+		if g.frame % 10 == 0 {
+			sparkleColor := bonusColor
+			switch g.powerUp.type_ {
+			case 1: sparkleColor = color.RGBA{100, 255, 100, 255}
+			case 2: sparkleColor = color.RGBA{100, 100, 255, 255}
+			}
+			g.addParticles(g.powerUp.pos, 1, sparkleColor)
+		}
+		
 		if g.powerUp.timer <= 0 {
 			g.powerUp.active = false
 		}
@@ -479,20 +859,20 @@ func (g *Game) Update() error {
 
 	g.updateParticles()
 
+	// Game movement logic
 	if g.frame%g.speed != 0 {
 		return nil
 	}
 
-	// Game logic
 	g.dir = g.nextDir
 	head := g.snake[0]
-	newHead := Point{(head.X + g.dir.X + gridW) % gridW, (head.Y + g.dir.Y + gridH) % gridH}
+	newHead := Point{(head.X + g.dir.X + g.gridW) % g.gridW, (head.Y + g.dir.Y + g.gridH) % g.gridH}
 
 	// Check collision with snake body
 	if g.invulnerable == 0 {
 		for _, s := range g.snake {
 			if s == newHead {
-				g.gameOver = true
+				g.state = StateGameOver
 				g.gameOverPlayer.Rewind()
 				g.gameOverPlayer.Play()
 				g.shakeIntensity = 15.0
@@ -573,20 +953,26 @@ func (g *Game) Update() error {
 	return nil
 }
 
-func drawEnhancedCell(x, y int, c color.RGBA, screen *ebiten.Image, scale float64, g *Game, opacity float64) {
+// ==================== RENDERING SYSTEM ====================
+
+func (g *Game) drawEnhancedCell(screen *ebiten.Image, x, y int, c color.RGBA, scale float64, opacity float64) {
 	if opacity <= 0 {
 		return
 	}
 	
-	size := float64(cellSize) * scale * g.scaleFactor
-	offset := float64(cellSize) * (1-scale) / 2
-	posX := (float64(x*cellSize)+offset)*g.scaleFactor
-	posY := (float64(y*cellSize)+offset)*g.scaleFactor
+	// Calculate screen position with centering offset
+	offsetX := (g.screenWidth - g.gridW*g.cellSize) / 2
+	offsetY := (g.screenHeight - g.gridH*g.cellSize) / 2
+	
+	size := float64(g.cellSize) * scale
+	cellOffset := float64(g.cellSize) * (1-scale) / 2
+	posX := float64(offsetX + x*g.cellSize) + cellOffset
+	posY := float64(offsetY + y*g.cellSize) + cellOffset
 	
 	// Apply screen shake
 	if g.shakeIntensity > 0 {
-		posX += (g.rng.Float64() - 0.5) * g.shakeIntensity * g.scaleFactor
-		posY += (g.rng.Float64() - 0.5) * g.shakeIntensity * g.scaleFactor
+		posX += (g.rng.Float64() - 0.5) * g.shakeIntensity
+		posY += (g.rng.Float64() - 0.5) * g.shakeIntensity
 	}
 	
 	// Draw shadow first
@@ -597,21 +983,18 @@ func drawEnhancedCell(x, y int, c color.RGBA, screen *ebiten.Image, scale float6
 	// Apply opacity to main color
 	finalColor := color.RGBA{c.R, c.G, c.B, uint8(float64(c.A) * opacity)}
 	
-	// Draw main cell with rounded corners effect
-	// cornerRadius := size * 0.15
-	
-	// Main rectangle
+	// Draw main cell
 	ebitenutil.DrawRect(screen, posX, posY, size, size, finalColor)
 	
 	// Highlight effect for certain cells
 	if scale > 0.95 {
 		highlightColor := color.RGBA{
-			uint8(math.Min(255, float64(c.R)+50)),
-			uint8(math.Min(255, float64(c.G)+50)),
-			uint8(math.Min(255, float64(c.B)+50)),
+			uint8(math.Min(255, float64(c.R)+80)),
+			uint8(math.Min(255, float64(c.G)+80)),
+			uint8(math.Min(255, float64(c.B)+80)),
 			uint8(float64(c.A) * opacity * 0.6),
 		}
-		highlightSize := size * 0.3
+		highlightSize := size * 0.4
 		highlightOffset := size * 0.1
 		ebitenutil.DrawRect(screen, posX+highlightOffset, posY+highlightOffset, highlightSize, highlightSize, highlightColor)
 	}
@@ -620,76 +1003,114 @@ func drawEnhancedCell(x, y int, c color.RGBA, screen *ebiten.Image, scale float6
 func (g *Game) drawParticles(screen *ebiten.Image) {
 	for _, p := range g.particles {
 		if p.life > 0 {
-			alpha := uint8(float64(p.color.A) * p.life)
-			particleColor := color.RGBA{p.color.R, p.color.G, p.color.B, alpha}
-			
-			x := p.pos.X * g.scaleFactor
-			y := p.pos.Y * g.scaleFactor
-			size := p.size * g.scaleFactor
-			
+			alpha := float32(p.color.A) * float32(p.life)
+			particleColor := color.RGBA{p.color.R, p.color.G, p.color.B, uint8(alpha)}
+
+			x := p.pos.X
+			y := p.pos.Y
+			size := p.size
+
 			// Apply screen shake to particles too
 			if g.shakeIntensity > 0 {
-				x += (g.rng.Float64() - 0.5) * g.shakeIntensity * 0.5 * g.scaleFactor
-				y += (g.rng.Float64() - 0.5) * g.shakeIntensity * 0.5 * g.scaleFactor
+				x += (g.rng.Float64() - 0.5) * g.shakeIntensity * 0.5
+				y += (g.rng.Float64() - 0.5) * g.shakeIntensity * 0.5
 			}
-			
-			ebitenutil.DrawRect(screen, x-size/2, y-size/2, size, size, particleColor)
+
+			// Rotation
+			cos := math.Cos(p.rotation)
+			sin := math.Sin(p.rotation)
+
+			// Rotated corners of the quad
+			corners := []Vector2{
+				{x - size/2*cos + size/2*sin, y - size/2*sin - size/2*cos},
+				{x + size/2*cos + size/2*sin, y + size/2*sin - size/2*cos},
+				{x + size/2*cos - size/2*sin, y + size/2*sin + size/2*cos},
+				{x - size/2*cos - size/2*sin, y - size/2*sin + size/2*cos},
+			}
+
+			// Convert corners into vertices
+			vertices := []ebiten.Vertex{
+				{
+					DstX:   float32(corners[0].X),
+					DstY:   float32(corners[0].Y),
+					ColorR: float32(particleColor.R) / 255,
+					ColorG: float32(particleColor.G) / 255,
+					ColorB: float32(particleColor.B) / 255,
+					ColorA: float32(particleColor.A) / 255,
+				},
+				{
+					DstX:   float32(corners[1].X),
+					DstY:   float32(corners[1].Y),
+					ColorR: float32(particleColor.R) / 255,
+					ColorG: float32(particleColor.G) / 255,
+					ColorB: float32(particleColor.B) / 255,
+					ColorA: float32(particleColor.A) / 255,
+				},
+				{
+					DstX:   float32(corners[2].X),
+					DstY:   float32(corners[2].Y),
+					ColorR: float32(particleColor.R) / 255,
+					ColorG: float32(particleColor.G) / 255,
+					ColorB: float32(particleColor.B) / 255,
+					ColorA: float32(particleColor.A) / 255,
+				},
+				{
+					DstX:   float32(corners[3].X),
+					DstY:   float32(corners[3].Y),
+					ColorR: float32(particleColor.R) / 255,
+					ColorG: float32(particleColor.G) / 255,
+					ColorB: float32(particleColor.B) / 255,
+					ColorA: float32(particleColor.A) / 255,
+				},
+			}
+
+			// Indices for two triangles
+			indices := []uint16{0, 1, 2, 0, 2, 3}
+
+			// Draw the rotated quad using a white texture
+			screen.DrawTriangles(vertices, indices, emptySubImage, nil)
 		}
 	}
 }
 
-func (g *Game) drawAnimatedBackground(screen *ebiten.Image) {
-	// Animated grid with wave effect
-	waveIntensity := 0.3
-	for x := 0; x < gridW; x++ {
-		for y := 0; y < gridH; y++ {
-			wave := math.Sin(g.backgroundWave + float64(x+y)*0.1) * waveIntensity
-			brightness := 30 + int(wave*10)
-			if brightness < 0 { brightness = 0 }
-			if brightness > 60 { brightness = 60 }
-			
-			waveColor := color.RGBA{uint8(brightness), uint8(brightness), uint8(brightness + 10), 255}
-			drawEnhancedCell(x, y, waveColor, screen, 0.05, g, 0.3)
-		}
-	}
+// Create a reusable white texture (1x1 pixel)
+var emptySubImage = ebiten.NewImage(1, 1)
+
+func init() {
+	emptySubImage.Fill(color.White)
 }
+
 
 func (g *Game) Draw(screen *ebiten.Image) {
-	screen.Fill(bgColor)
+	// Always draw the space background
+	g.renderer.drawSpaceBackground(screen)
 	
-	if g.inTitle {
+	switch g.state {
+	case StateTitleScreen:
 		g.drawTitleScreen(screen)
-		return
-	}
-	
-	if g.inMenu {
+	case StateMenu:
 		g.drawMenuScreen(screen)
-		return
+	case StatePlaying, StatePaused, StateGameOver:
+		g.drawGameplay(screen)
+		if g.state == StatePaused {
+			g.drawPauseOverlay(screen)
+		} else if g.state == StateGameOver {
+			g.drawGameOverOverlay(screen)
+		}
 	}
+}
 
-	// Draw animated background
-	g.drawAnimatedBackground(screen)
-
-	// Draw grid lines with subtle glow
-	for x := 0; x <= gridW; x++ {
-		posX := float64(x*cellSize) * g.scaleFactor
-		ebitenutil.DrawRect(screen, posX, 0, 1*g.scaleFactor, float64(gridH*cellSize)*g.scaleFactor, gridColor)
-	}
-	for y := 0; y <= gridH; y++ {
-		posY := float64(y*cellSize) * g.scaleFactor
-		ebitenutil.DrawRect(screen, 0, posY, float64(gridW*cellSize)*g.scaleFactor, 1*g.scaleFactor, gridColor)
-	}
-
+func (g *Game) drawGameplay(screen *ebiten.Image) {
 	// Draw power-up
 	if g.powerUp.active {
 		pulse := 0.8 + 0.2*math.Sin(g.powerUp.pulse)
 		var powerColor color.RGBA
 		switch g.powerUp.type_ {
 		case 0: powerColor = bonusColor
-		case 1: powerColor = color.RGBA{100, 255, 100, 255}
-		case 2: powerColor = color.RGBA{100, 100, 255, 255}
+		case 1: powerColor = color.RGBA{120, 255, 120, 255}
+		case 2: powerColor = color.RGBA{120, 120, 255, 255}
 		}
-		drawEnhancedCell(g.powerUp.pos.X, g.powerUp.pos.Y, powerColor, screen, pulse, g, 1.0)
+		g.drawEnhancedCell(screen, g.powerUp.pos.X, g.powerUp.pos.Y, powerColor, pulse, 1.0)
 	}
 
 	// Draw food with enhanced pulsing
@@ -705,7 +1126,7 @@ func (g *Game) Draw(screen *ebiten.Image) {
 			255,
 		}
 	}
-	drawEnhancedCell(g.food.X, g.food.Y, currentFoodColor, screen, pulse, g, 1.0)
+	g.drawEnhancedCell(screen, g.food.X, g.food.Y, currentFoodColor, pulse, 1.0)
 
 	// Draw snake with trail effect
 	for i, s := range g.snake {
@@ -723,15 +1144,15 @@ func (g *Game) Draw(screen *ebiten.Image) {
 			if g.invulnerable > 0 {
 				// Flashing invulnerability
 				if (g.frame/5)%2 == 0 {
-					currentHeadColor = color.RGBA{255, 255, 100, 255}
+					currentHeadColor = color.RGBA{255, 255, 150, 255}
 				}
 			} else if g.speedBoostTime > 0 {
-				currentHeadColor = color.RGBA{255, 150, 100, 255}
+				currentHeadColor = color.RGBA{255, 180, 100, 255}
 			} else if g.slowMotionTime > 0 {
-				currentHeadColor = color.RGBA{100, 150, 255, 255}
+				currentHeadColor = color.RGBA{100, 180, 255, 255}
 			}
 			
-			drawEnhancedCell(s.X, s.Y, currentHeadColor, screen, headScale, g, opacity)
+			g.drawEnhancedCell(screen, s.X, s.Y, currentHeadColor, headScale, opacity)
 		} else {
 			// Body with gradient effect
 			bodyScale := 0.9 - float64(i)*0.01
@@ -740,243 +1161,402 @@ func (g *Game) Draw(screen *ebiten.Image) {
 			// Gradient body color
 			factor := float64(i) / float64(len(g.snake))
 			currentBodyColor := color.RGBA{
-				uint8(float64(bodyColor.R) * (1 - factor*0.3)),
-				uint8(float64(bodyColor.G) * (1 - factor*0.3)),
-				uint8(float64(bodyColor.B) * (1 - factor*0.3)),
+				uint8(float64(bodyColor.R) * (1 - factor*0.4)),
+				uint8(float64(bodyColor.G) * (1 - factor*0.4)),
+				uint8(float64(bodyColor.B) * (1 - factor*0.4)),
 				bodyColor.A,
 			}
 			
-			drawEnhancedCell(s.X, s.Y, currentBodyColor, screen, bodyScale, g, opacity)
+			g.drawEnhancedCell(screen, s.X, s.Y, currentBodyColor, bodyScale, opacity)
 		}
 	}
 
 	// Draw particles
 	g.drawParticles(screen)
 
-	// Enhanced HUD
+	// Draw HUD
 	g.drawHUD(screen)
 }
 
 func (g *Game) drawTitleScreen(screen *ebiten.Image) {
-	screenWidth := float64(gridW * cellSize)
-	screenHeight := float64(gridH * cellSize)
-	
-	// Animated title background
-	for i := 0; i < 20; i++ {
-		x := int(float64(i) + math.Sin(g.backgroundWave+float64(i)*0.5)*2) % gridW
-		y := int(float64(i*2) + math.Cos(g.backgroundWave+float64(i)*0.3)*1) % gridH
-		if x >= 0 && y >= 0 && x < gridW && y < gridH {
-			alpha := 0.3 + 0.2*math.Sin(g.backgroundWave+float64(i)*0.2)
-			color := color.RGBA{50, 100, 50, uint8(alpha * 255)}
-			drawEnhancedCell(x, y, color, screen, 0.6, g, alpha)
-		}
-	}
-	
+	centerX := float64(g.screenWidth) / 2
+	centerY := float64(g.screenHeight) / 2
+
 	lines := []string{
-		"🐍 ENHANCED SNAKE 🐍",
+		"🌌 COSMIC SNAKE 🐍",
 		"",
-		"🎮 Features:",
+		"🎮 Enhanced Features:",
+		"• Dynamic Fullscreen Playground",
+		"• Spectacular Space Background",
 		"• Combo System & Power-ups",
 		"• Particle Effects & Smooth Animations",
 		"• Enhanced Audio & Visual Effects",
 		"• Statistics Tracking",
-		"• Dynamic Difficulty",
 		"",
 		"🎯 Controls:",
 		"Arrow Keys/WASD: Move",
-		"P: Pause | F: Fullscreen | Esc: Menu",
+		"P: Pause | F11: Fullscreen | Esc: Menu",
 		"+/-: Speed Control",
 		"",
-		"🏆 High Score: " + fmt.Sprintf("%d", g.gameData.HighScore),
-		fmt.Sprintf("Games Played: %d | Best Combo: %d", g.gameData.TotalGames, g.gameData.BestCombo),
+		"🏆 Statistics:",
+		fmt.Sprintf("High Score: %d | Games: %d", g.gameData.HighScore, g.gameData.TotalGames),
+		fmt.Sprintf("Best Combo: %d", g.gameData.BestCombo),
 		"",
-		"Press ENTER or SPACE to start!",
+		"🚀 Press ENTER/SPACE to Launch!",
 		"Press S for Statistics",
 		"",
-		"Enhanced by Claude AI",
+		"✨ Enhanced Cosmic Experience ✨",
 	}
-	
-	lineHeight := 18.0 * g.scaleFactor
+
+	lineHeight := 20.0
 	totalHeight := float64(len(lines)) * lineHeight
-	startY := (screenHeight - totalHeight) / 2
-	
+	startY := centerY - totalHeight/2
+
+	face := basicfont.Face7x13
+
 	for i, line := range lines {
 		if line == "" {
 			continue
 		}
-		
-		approxWidth := float64(len(line)) * 7 * g.scaleFactor
-		x := (screenWidth - approxWidth) / 2
+
+		approxWidth := float64(len(line)) * 8
+		x := centerX - approxWidth/2
 		y := startY + float64(i)*lineHeight
-		
-		// Add glow effect to title
-		if i == 0 {
-			for dx := -1; dx <= 1; dx++ {
-				for dy := -1; dy <= 1; dy++ {
+
+		// Decide line color
+		var lineColor color.Color = color.White
+		switch {
+		case i == 0: // Title
+			// Pulsing glow
+			glowIntensity := 0.7 + 0.3*math.Sin(g.renderer.time*2)
+			for dx := -2; dx <= 2; dx++ {
+				for dy := -2; dy <= 2; dy++ {
 					if dx != 0 || dy != 0 {
-						ebitenutil.DebugPrintAt(screen, line, int(x)+dx*2, int(y)+dy*2)
+						alpha := uint8(80 * glowIntensity)
+						glowColor := color.RGBA{0, 255, 200, alpha}
+						text.Draw(screen, line, face, int(x)+dx, int(y)+dy, glowColor)
 					}
 				}
 			}
+			lineColor = color.RGBA{255, 255, 0, 255} // yellow title
+
+		case i == 2: // "Enhanced Features"
+			lineColor = color.RGBA{0, 200, 255, 255} // cyan-blue
+
+		case i >= 3 && i <= 8: // feature list
+			lineColor = color.RGBA{180, 255, 180, 255} // light green
+
+		case i == 10: // "Controls"
+			lineColor = color.RGBA{255, 150, 0, 255} // orange
+
+		case i >= 11 && i <= 13: // control list
+			lineColor = color.RGBA{200, 200, 255, 255} // soft blue
+
+		case i == 15: // "Statistics"
+			lineColor = color.RGBA{255, 100, 150, 255} // pink
+
+		case i >= 16 && i <= 17: // stats values
+			lineColor = color.RGBA{200, 255, 200, 255} // light green
+
+		case i >= 19 && i <= 20: // Launch instructions
+			lineColor = color.RGBA{255, 220, 100, 255} // golden
+
+		case i == 22: // closing line
+			lineColor = color.RGBA{150, 200, 255, 255} // pastel blue
 		}
-		
-		ebitenutil.DebugPrintAt(screen, line, int(x), int(y))
+
+		// Draw line with chosen color
+		text.Draw(screen, line, face, int(x), int(y), lineColor)
 	}
 }
 
 func (g *Game) drawMenuScreen(screen *ebiten.Image) {
 	// Semi-transparent overlay
-	overlay := ebiten.NewImage(int(float64(gridW*cellSize)*g.scaleFactor), int(float64(gridH*cellSize)*g.scaleFactor))
-	overlay.Fill(color.RGBA{0, 0, 0, 150})
+	overlay := ebiten.NewImage(g.screenWidth, g.screenHeight)
+	overlay.Fill(color.RGBA{0, 0, 0, 180})
 	screen.DrawImage(overlay, nil)
-	
-	screenWidth := float64(gridW * cellSize)
-	screenHeight := float64(gridH * cellSize)
-	
+
+	centerX := float64(g.screenWidth) / 2
+	centerY := float64(g.screenHeight) / 2
+
 	menuItems := []string{
 		"Resume Game",
 		"New Game",
 		"Reset Statistics",
 		"Back to Title",
 	}
-	
-	if g.gameOver {
-		menuItems[0] = "Game Over!"
+
+	if g.state == StateGameOver || g.score == 0 {
+		menuItems[0] = "Start New Game"
 	}
-	
-	lineHeight := 30.0 * g.scaleFactor
+
+	lineHeight := 40.0
 	totalHeight := float64(len(menuItems)) * lineHeight
-	startY := (screenHeight - totalHeight) / 2
-	
+	startY := centerY - totalHeight/2
+
 	// Menu title
-	title := "=== PAUSE MENU ==="
-	if g.gameOver {
-		title = "=== GAME OVER ==="
+	title := "=== COSMIC MENU ==="
+	if g.state == StateGameOver {
+		title = "=== MISSION COMPLETE ==="
 	}
-	titleWidth := float64(len(title)) * 8 * g.scaleFactor
-	titleX := (screenWidth - titleWidth) / 2
-	titleY := startY - 50*g.scaleFactor
-	ebitenutil.DebugPrintAt(screen, title, int(titleX), int(titleY))
-	
+	titleWidth := float64(len(title)) * 10
+	titleX := centerX - titleWidth/2
+	titleY := startY - 80
+
+	face := basicfont.Face7x13
+
+	// Title with glow
+	glow := 0.8 + 0.2*math.Sin(g.renderer.time*3)
+	for dx := -1; dx <= 1; dx++ {
+		for dy := -1; dy <= 1; dy++ {
+			if dx != 0 || dy != 0 {
+				alpha := uint8(100 * glow)
+				glowColor := color.RGBA{100, 200, 255, alpha}
+				text.Draw(screen, title, face, int(titleX)+dx, int(titleY)+dy, glowColor)
+			}
+		}
+	}
+	text.Draw(screen, title, face, int(titleX), int(titleY), color.White)
+
+	// Menu items
 	for i, item := range menuItems {
-		approxWidth := float64(len(item)) * 8 * g.scaleFactor
-		x := (screenWidth - approxWidth) / 2
+		approxWidth := float64(len(item)) * 9
+		x := centerX - approxWidth/2
 		y := startY + float64(i)*lineHeight
-		
-		// Highlight selected option
+
 		if i == g.menuOption {
+			// Selected option
 			prefix := "► "
 			suffix := " ◄"
 			fullText := prefix + item + suffix
-			fullWidth := float64(len(fullText)) * 8 * g.scaleFactor
-			fullX := (screenWidth - fullWidth) / 2
-			ebitenutil.DebugPrintAt(screen, fullText, int(fullX), int(y))
+			fullWidth := float64(len(fullText)) * 9
+			fullX := centerX - fullWidth/2
+
+			selectionGlow := 0.7 + 0.3*math.Sin(g.renderer.time*4)
+			for dx := -1; dx <= 1; dx++ {
+				for dy := -1; dy <= 1; dy++ {
+					if dx != 0 || dy != 0 {
+						alpha := uint8(120 * selectionGlow)
+						highlightColor := color.RGBA{255, 255, 100, alpha}
+						text.Draw(screen, fullText, face, int(fullX)+dx, int(y)+dy, highlightColor)
+					}
+				}
+			}
+			text.Draw(screen, fullText, face, int(fullX), int(y), color.RGBA{255, 255, 150, 255})
 		} else {
-			ebitenutil.DebugPrintAt(screen, item, int(x), int(y))
+			text.Draw(screen, item, face, int(x), int(y), color.White)
 		}
 	}
-	
+
 	// Show current game stats if in game
-	if !g.gameOver && !g.inTitle {
-		statsY := startY + float64(len(menuItems))*lineHeight + 40*g.scaleFactor
+	if g.state != StateGameOver && g.score > 0 {
+		statsY := startY + float64(len(menuItems))*lineHeight + 60
 		stats := []string{
 			fmt.Sprintf("Current Score: %d", g.score),
 			fmt.Sprintf("Current Combo: %d (Max: %d)", g.combo, g.maxCombo),
 			fmt.Sprintf("Snake Length: %d", len(g.snake)),
+			fmt.Sprintf("Playfield: %dx%d", g.gridW, g.gridH),
 		}
-		
+
 		for i, stat := range stats {
-			statWidth := float64(len(stat)) * 8 * g.scaleFactor
-			statX := (screenWidth - statWidth) / 2
-			statY := statsY + float64(i)*20*g.scaleFactor
-			ebitenutil.DebugPrintAt(screen, stat, int(statX), int(statY))
+			statWidth := float64(len(stat)) * 8
+			statX := centerX - statWidth/2
+			statY := statsY + float64(i)*25
+			text.Draw(screen, stat, face, int(statX), int(statY), color.RGBA{180, 220, 255, 255})
 		}
 	}
 }
 
+func (g *Game) drawPauseOverlay(screen *ebiten.Image) {
+	// Semi-transparent overlay
+	overlay := ebiten.NewImage(g.screenWidth, g.screenHeight)
+	overlay.Fill(color.RGBA{0, 0, 0, 120})
+	screen.DrawImage(overlay, nil)
+
+	centerX := float64(g.screenWidth) / 2
+	centerY := float64(g.screenHeight) / 2
+
+	pauseText := "⏸️ PAUSED"
+	textWidth := float64(len(pauseText)) * 15
+
+	face := basicfont.Face7x13
+
+	// Pause text with glow
+	glow := 0.8 + 0.2*math.Sin(g.renderer.time*2)
+	for dx := -2; dx <= 2; dx++ {
+		for dy := -2; dy <= 2; dy++ {
+			if dx != 0 || dy != 0 {
+				alpha := uint8(100 * glow)
+				glowColor := color.RGBA{255, 255, 100, alpha}
+				text.Draw(screen, pauseText, face, int(centerX-textWidth/2)+dx, int(centerY)+dy, glowColor)
+			}
+		}
+	}
+
+	// Main pause text (white)
+	text.Draw(screen, pauseText, face, int(centerX-textWidth/2), int(centerY), color.White)
+
+	// Instructions
+	instruction := "Press P to Resume or ESC for Menu"
+	instrWidth := float64(len(instruction)) * 8
+	text.Draw(screen, instruction, face, int(centerX-instrWidth/2), int(centerY+40), color.RGBA{200, 220, 255, 255})
+}
+
+func (g *Game) drawGameOverOverlay(screen *ebiten.Image) {
+	// Semi-transparent overlay
+	overlay := ebiten.NewImage(g.screenWidth, g.screenHeight)
+	overlay.Fill(color.RGBA{50, 0, 0, 150})
+	screen.DrawImage(overlay, nil)
+
+	centerX := float64(g.screenWidth) / 2
+	centerY := float64(g.screenHeight) / 2
+
+	face := basicfont.Face7x13
+
+	// Game Over text with dramatic effect
+	gameOverText := "💀 MISSION FAILED 💀"
+	textWidth := float64(len(gameOverText)) * 12
+
+	// Pulsing red glow
+	pulse := 0.6 + 0.4*math.Sin(g.renderer.time*3)
+	for dx := -3; dx <= 3; dx++ {
+		for dy := -3; dy <= 3; dy++ {
+			if dx != 0 || dy != 0 {
+				alpha := uint8(150 * pulse)
+				glowColor := color.RGBA{255, 100, 100, alpha}
+				text.Draw(screen, gameOverText, face, int(centerX-textWidth/2)+dx, int(centerY-50)+dy, glowColor)
+			}
+		}
+	}
+	// Main text in white
+	text.Draw(screen, gameOverText, face, int(centerX-textWidth/2), int(centerY-50), color.White)
+
+	// Final score
+	finalScore := fmt.Sprintf("Final Score: %d", g.score)
+	scoreWidth := float64(len(finalScore)) * 10
+	text.Draw(screen, finalScore, face, int(centerX-scoreWidth/2), int(centerY), color.White)
+
+	// High score notification
+	if g.score > g.gameData.HighScore {
+		newRecord := "🏆 NEW HIGH SCORE! 🏆"
+		recordWidth := float64(len(newRecord)) * 10
+
+		// Golden glow for new record
+		goldGlow := 0.7 + 0.3*math.Sin(g.renderer.time*4)
+		for dx := -2; dx <= 2; dx++ {
+			for dy := -2; dy <= 2; dy++ {
+				if dx != 0 || dy != 0 {
+					alpha := uint8(180 * goldGlow)
+					goldColor := color.RGBA{255, 215, 0, alpha}
+					text.Draw(screen, newRecord, face, int(centerX-recordWidth/2)+dx, int(centerY+30)+dy, goldColor)
+				}
+			}
+		}
+		text.Draw(screen, newRecord, face, int(centerX-recordWidth/2), int(centerY+30), color.RGBA{255, 255, 200, 255})
+	}
+
+	// Instructions
+	instruction := "Press ENTER/R to Restart or ESC for Menu"
+	instrWidth := float64(len(instruction)) * 8
+	text.Draw(screen, instruction, face, int(centerX-instrWidth/2), int(centerY+80), color.RGBA{200, 220, 255, 255})
+}
+
 func (g *Game) drawHUD(screen *ebiten.Image) {
-	padding := 10.0 * g.scaleFactor
-	lineHeight := 16.0 * g.scaleFactor
+	padding := 15.0
+	lineHeight := 18.0
 	
-	// Main HUD
+	// Main HUD with better spacing
 	lines := []string{
-		fmt.Sprintf("Score: %d | High: %d | Speed: %d/%d", g.score, g.gameData.HighScore, maxSpeed-g.baseSpeed+minSpeed, maxSpeed-minSpeed+1),
-		fmt.Sprintf("Length: %d | Combo: %d (Max: %d)", len(g.snake), g.combo, g.maxCombo),
+		fmt.Sprintf("Score: %d | High: %d | Speed: %d", g.score, g.gameData.HighScore, maxSpeed-g.baseSpeed+minSpeed),
+		fmt.Sprintf("Length: %d | Combo: %dx (Best: %dx)", len(g.snake), g.combo, g.maxCombo),
+		fmt.Sprintf("Arena: %dx%d", g.gridW, g.gridH),
 	}
 	
-	// Status effects
+	// Status effects with icons
 	var effects []string
 	if g.speedBoostTime > 0 {
-		effects = append(effects, fmt.Sprintf("SPEED BOOST: %ds", g.speedBoostTime/60+1))
+		effects = append(effects, fmt.Sprintf("🚀 BOOST: %ds", g.speedBoostTime/60+1))
 	}
 	if g.slowMotionTime > 0 {
-		effects = append(effects, fmt.Sprintf("SLOW MOTION: %ds", g.slowMotionTime/60+1))
+		effects = append(effects, fmt.Sprintf("🐌 SLOW: %ds", g.slowMotionTime/60+1))
 	}
 	if g.invulnerable > 0 {
-		effects = append(effects, fmt.Sprintf("INVULNERABLE: %ds", g.invulnerable/60+1))
-	}
-	if g.paused {
-		effects = append(effects, "PAUSED - Press P to Resume")
+		effects = append(effects, fmt.Sprintf("🛡️ SHIELD: %ds", g.invulnerable/60+1))
 	}
 	
-	// Power-up indicator
+	// Power-up indicator with icon
 	if g.powerUp.active {
-		powerUpNames := []string{"BONUS POINTS", "SPEED BOOST", "INVULNERABILITY"}
-		effects = append(effects, fmt.Sprintf("Power-up: %s (%ds)", powerUpNames[g.powerUp.type_], g.powerUp.timer/60+1))
+		powerUpNames := []string{"💰 BONUS", "🚀 SPEED", "🛡️ SHIELD"}
+		effects = append(effects, fmt.Sprintf("%s: %ds", powerUpNames[g.powerUp.type_], g.powerUp.timer/60+1))
 	}
 	
 	lines = append(lines, effects...)
 	
-	// Controls hint
-	if g.frame < 300 { // Show for first 5 seconds
-		lines = append(lines, "ESC: Menu | +/-: Speed | P: Pause | F: Fullscreen")
+	// Controls hint for new players
+	if g.frame < 360 { // Show for first 6 seconds
+		lines = append(lines, "F11: Fullscreen | ESC: Menu | P: Pause | +/-: Speed")
 	}
+	
+	// Draw HUD with subtle background
+	hudHeight := float64(len(lines)) * lineHeight + padding*2
+	hudBg := color.RGBA{0, 0, 0, 100}
+	ebitenutil.DrawRect(screen, 0, 0, 400, hudHeight, hudBg)
 	
 	for i, line := range lines {
 		y := padding + float64(i)*lineHeight
 		ebitenutil.DebugPrintAt(screen, line, int(padding), int(y))
 	}
 	
-	// Progress bars for effects
-	barY := padding + float64(len(lines))*lineHeight + 5*g.scaleFactor
-	barWidth := 200.0 * g.scaleFactor
-	barHeight := 8.0 * g.scaleFactor
+	// Progress bars for effects with better visual design
+	barY := padding + float64(len(lines))*lineHeight + 10
+	barWidth := 250.0
+	barHeight := 6.0
 	
 	if g.speedBoostTime > 0 {
 		progress := float64(g.speedBoostTime) / 300.0
-		ebitenutil.DrawRect(screen, padding, barY, barWidth, barHeight, color.RGBA{50, 50, 50, 255})
-		ebitenutil.DrawRect(screen, padding, barY, barWidth*progress, barHeight, color.RGBA{255, 150, 100, 255})
-		barY += barHeight + 2*g.scaleFactor
+		// Background
+		ebitenutil.DrawRect(screen, padding, barY, barWidth, barHeight, color.RGBA{30, 30, 30, 180})
+		// Progress with gradient effect
+		ebitenutil.DrawRect(screen, padding, barY, barWidth*progress, barHeight, color.RGBA{255, 150, 50, 255})
+		barY += barHeight + 8
 	}
 	
 	if g.invulnerable > 0 {
 		progress := float64(g.invulnerable) / 180.0
-		ebitenutil.DrawRect(screen, padding, barY, barWidth, barHeight, color.RGBA{50, 50, 50, 255})
+		// Background
+		ebitenutil.DrawRect(screen, padding, barY, barWidth, barHeight, color.RGBA{30, 30, 30, 180})
+		// Progress
 		ebitenutil.DrawRect(screen, padding, barY, barWidth*progress, barHeight, color.RGBA{100, 150, 255, 255})
 	}
 }
 
 func (g *Game) Layout(outsideWidth, outsideHeight int) (screenWidth, screenHeight int) {
-	g.isFullscreen = ebiten.IsWindowMaximized()
-	scaleX := float64(outsideWidth) / float64(gridW*cellSize)
-	scaleY := float64(outsideHeight) / float64(gridH*cellSize)
-	g.scaleFactor = math.Min(scaleX, scaleY)
+	g.screenWidth = outsideWidth
+	g.screenHeight = outsideHeight
 	
-	// Ensure minimum scale
-	if g.scaleFactor < 0.5 {
-		g.scaleFactor = 0.5
+	// Recalculate playfield dimensions when window size changes
+	if g.state == StatePlaying || g.state == StatePaused {
+		g.calculatePlayfieldDimensions()
 	}
 	
-	return int(float64(gridW*cellSize) * g.scaleFactor), int(float64(gridH*cellSize) * g.scaleFactor)
+	return outsideWidth, outsideHeight
 }
+
+// ==================== MAIN FUNCTION ====================
 
 func main() {
 	ebiten.SetWindowSize(1280, 720)
-	ebiten.SetWindowTitle("Enhanced Snake — Go + Ebiten")
+	ebiten.SetWindowTitle("Cosmic Snake - Enhanced Fullscreen Experience")
 	ebiten.SetWindowResizable(true)
-	ebiten.SetWindowSizeLimits(640, 480, -1, -1)
+	ebiten.SetWindowSizeLimits(800, 600, -1, -1)
 	
-	if err := ebiten.RunGame(NewGame()); err != nil {
+	// Start in fullscreen for the best experience
+	ebiten.SetFullscreen(true)
+	
+	game := NewGame()
+	game.isFullscreen = true
+	
+	if err := ebiten.RunGame(game); err != nil {
 		log.Fatal(err)
 	}
 }
